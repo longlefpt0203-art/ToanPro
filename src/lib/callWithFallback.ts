@@ -5,34 +5,56 @@ import { fetchSafeJson } from './imageHelper';
  * Direct client-side Gemini REST API call when running on static hosting (Vercel without backend, GitHub Pages)
  */
 async function callDirectGemini(apiKey: string, prompt: string, imageBase64?: string, mimeType = 'image/png'): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey.trim()}`;
+  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  let lastError: Error | null = null;
 
-  const parts: any[] = [];
-  if (imageBase64) {
-    parts.push({
-      inline_data: {
-        mime_type: mimeType,
-        data: imageBase64.replace(/^data:image\/[a-z]+;base64,/, ''),
-      },
-    });
+  for (const model of candidateModels) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`;
+
+    const parts: any[] = [];
+    if (imageBase64) {
+      parts.push({
+        inline_data: {
+          mime_type: mimeType,
+          data: imageBase64.replace(/^data:image\/[a-z]+;base64,/, ''),
+        },
+      });
+    }
+    parts.push({ text: prompt });
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+        }),
+      });
+
+      const data = await fetchSafeJson(res);
+      if (res.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+        const rawText = data.candidates[0].content.parts[0].text;
+        return rawText.replace(/```latex/g, '').replace(/```/g, '').trim();
+      }
+
+      const errMsg = data.error?.message || `Lỗi Gemini API (${res.status})`;
+      // Check for 503 high demand or 429 rate limit
+      if (res.status === 503 || res.status === 429 || errMsg.includes('high demand') || errMsg.includes('UNAVAILABLE')) {
+        console.warn(`Model ${model} đang bận (503 cao điểm), tự động chuyển sang ${candidateModels[candidateModels.indexOf(model) + 1] || 'dự phòng'}...`);
+        lastError = new Error(`Mô hình ${model} đang quá tải cao điểm: ${errMsg}`);
+        continue;
+      }
+      throw new Error(errMsg);
+    } catch (err: any) {
+      if (err.message?.includes('high demand') || err.message?.includes('503') || err.message?.includes('UNAVAILABLE') || err.message?.includes('429')) {
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
   }
-  parts.push({ text: prompt });
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-    }),
-  });
-
-  const data = await fetchSafeJson(res);
-  if (!res.ok) {
-    throw new Error(data.error?.message || `Lỗi Gemini API (${res.status})`);
-  }
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return rawText.replace(/```latex/g, '').replace(/```/g, '').trim();
+  throw lastError || new Error('Mô hình Gemini đang tạm thời có lượng truy cập cao điểm. Vui lòng thử lại sau 1-2 phút!');
 }
 
 /**

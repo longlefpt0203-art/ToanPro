@@ -9,19 +9,33 @@ import {
   Code, 
   Eye, 
   CheckCircle2, 
-  HelpCircle, 
   AlertCircle,
   RefreshCw,
   Sparkles,
   ChevronDown,
   ChevronUp,
   Sliders,
-  Scissors
+  Scissors,
+  Clipboard,
+  Images,
+  Maximize2,
+  X,
+  Layers,
+  ArrowRight
 } from 'lucide-react';
 import { ExamQuestion, BYOKConfig, QuestionType } from '../types';
 import { buildLatexEx, parseExBlocks, renderLatexToHtml } from '../lib/latexHelper';
 import { SAMPLE_QUESTIONS } from '../data/samples';
 import { incrementQuotaCount } from '../lib/storage';
+
+export interface UploadedImageItem {
+  id: string;
+  dataUrl: string;
+  mimeType: string;
+  name: string;
+  size: number;
+  status: 'idle' | 'processing' | 'done' | 'error';
+}
 
 interface OcrExModuleProps {
   questions: ExamQuestion[];
@@ -34,10 +48,15 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
   setQuestions,
   byok,
 }) => {
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [imageMime, setImageMime] = useState<string>('image/png');
+  // Multi-image state
+  const [imagesList, setImagesList] = useState<UploadedImageItem[]>([]);
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
+
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [progressText, setProgressText] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'preview' | 'latex' | 'compare'>('preview');
   const [rawLatexText, setRawLatexText] = useState<string>('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -65,57 +84,151 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
     }
   }, [questions]);
 
-  // Clipboard paste listener
+  // Handle multiple files conversion to base64
+  const processFiles = (files: FileList | File[], source: 'upload' | 'paste' = 'upload') => {
+    setErrorMsg(null);
+    const newItems: UploadedImageItem[] = [];
+    const count = files.length;
+    let loaded = 0;
+
+    Array.from(files).forEach((file, index) => {
+      if (!file.type.startsWith('image/')) return;
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        const now = new Date();
+        const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+        const name = source === 'paste' 
+          ? `Ảnh chụp Clipboard (${timeStr})` 
+          : file.name || `Trang ${imagesList.length + index + 1}`;
+
+        newItems.push({
+          id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          dataUrl,
+          mimeType: file.type || 'image/png',
+          name,
+          size: file.size,
+          status: 'idle',
+        });
+
+        loaded++;
+        if (loaded === count) {
+          setImagesList(prev => {
+            const updated = [...prev, ...newItems];
+            if (!selectedImageId && updated.length > 0) {
+              setSelectedImageId(updated[0].id);
+            }
+            return updated;
+          });
+          showNotification(`Đã nhận ${newItems.length} ảnh (${source === 'paste' ? 'từ Clipboard / Ctrl+V' : 'tải lên'})!`);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const showNotification = (msg: string) => {
+    setNotificationMsg(msg);
+    setTimeout(() => setNotificationMsg(null), 3000);
+  };
+
+  // Clipboard paste listener: captures Ctrl + V from anywhere in the document
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
+
+      const imageFiles: File[] = [];
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.indexOf('image') !== -1) {
           const blob = items[i].getAsFile();
-          if (blob) {
-            handleImageFile(blob);
-            break;
-          }
+          if (blob) imageFiles.push(blob);
         }
       }
+
+      if (imageFiles.length > 0) {
+        processFiles(imageFiles, 'paste');
+      }
     };
+
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, []);
+  }, [imagesList.length]);
 
-  const handleImageFile = (file: File) => {
+  // Click button to paste from clipboard via navigator.clipboard.read
+  const handlePasteFromClipboardButton = async () => {
     setErrorMsg(null);
-    setImageMime(file.type || 'image/png');
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setSelectedImage(e.target?.result as string);
-    };
-    reader.readAsDataURL(file);
-  };
+    try {
+      if (navigator.clipboard && navigator.clipboard.read) {
+        const clipboardItems = await navigator.clipboard.read();
+        const imageFiles: File[] = [];
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      handleImageFile(e.target.files[0]);
+        for (const item of clipboardItems) {
+          for (const type of item.types) {
+            if (type.startsWith('image/')) {
+              const blob = await item.getType(type);
+              const file = new File([blob], `clipboard-${Date.now()}.png`, { type });
+              imageFiles.push(file);
+            }
+          }
+        }
+
+        if (imageFiles.length > 0) {
+          processFiles(imageFiles, 'paste');
+          return;
+        }
+      }
+      showNotification('Vui lòng nhấn Ctrl + V (hoặc Cmd + V) trực tiếp trên bàn phím để dán ảnh đã copy!');
+    } catch {
+      showNotification('Vui lòng nhấn Ctrl + V (hoặc Cmd + V) trực tiếp trên bàn phím để dán ảnh đã copy!');
     }
   };
 
-  const handleRunOcr = async () => {
-    if (!selectedImage) {
-      setErrorMsg('Vui lòng tải lên ảnh hoặc chọn mẫu đề thi.');
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processFiles(e.target.files, 'upload');
+    }
+  };
+
+  const handleRemoveImage = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setImagesList(prev => {
+      const next = prev.filter(img => img.id !== id);
+      if (selectedImageId === id) {
+        setSelectedImageId(next.length > 0 ? next[0].id : null);
+      }
+      return next;
+    });
+  };
+
+  const handleClearAllImages = () => {
+    setImagesList([]);
+    setSelectedImageId(null);
+  };
+
+  // Run Batch OCR on all uploaded images
+  const handleRunBatchOcr = async () => {
+    if (imagesList.length === 0) {
+      setErrorMsg('Vui lòng tải lên ít nhất một ảnh hoặc dán ảnh từ clipboard (Ctrl+V).');
       return;
     }
 
     setIsLoading(true);
     setErrorMsg(null);
+    setProgressText(`Đang phân tích ${imagesList.length} ảnh đề thi...`);
 
     try {
+      const payloadImages = imagesList.map(img => ({
+        imageBase64: img.dataUrl,
+        mimeType: img.mimeType,
+      }));
+
       const res = await fetch('/api/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          imageBase64: selectedImage,
-          mimeType: imageMime,
+          images: payloadImages,
           questionType: questionTypeChoice,
           includeSolution,
           byok,
@@ -132,12 +245,11 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
         const parsed = parseExBlocks(data.latex);
         if (parsed.length > 0) {
           setQuestions(prev => [...prev, ...parsed]);
-          // Expand new solutions
           const newExp: Record<string, boolean> = { ...expandedSolutions };
           parsed.forEach(p => (newExp[p.id] = true));
           setExpandedSolutions(newExp);
+          showNotification(`Đã trích xuất thành công ${parsed.length} câu hỏi vào danh sách đề thi!`);
         } else {
-          // If plain block, append single
           const single: ExamQuestion = {
             id: `q-${Date.now()}`,
             statement: data.latex,
@@ -151,20 +263,62 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
       setErrorMsg(err.message || 'Không thể kết nối đến máy chủ AI.');
     } finally {
       setIsLoading(false);
+      setProgressText('');
+    }
+  };
+
+  // Run OCR on single selected image
+  const handleRunSingleOcr = async (imgItem: UploadedImageItem) => {
+    setIsLoading(true);
+    setErrorMsg(null);
+    setProgressText(`Đang phân tích ảnh: ${imgItem.name}...`);
+
+    try {
+      const res = await fetch('/api/ocr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: imgItem.dataUrl,
+          mimeType: imgItem.mimeType,
+          questionType: questionTypeChoice,
+          includeSolution,
+          byok,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Lỗi khi nhận diện ảnh.');
+
+      if (data.latex) {
+        incrementQuotaCount();
+        const parsed = parseExBlocks(data.latex);
+        if (parsed.length > 0) {
+          setQuestions(prev => [...prev, ...parsed]);
+          const newExp: Record<string, boolean> = { ...expandedSolutions };
+          parsed.forEach(p => (newExp[p.id] = true));
+          setExpandedSolutions(newExp);
+          showNotification(`Đã trích xuất ${parsed.length} câu hỏi từ ảnh này!`);
+        }
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Lỗi nhận diện ảnh.');
+    } finally {
+      setIsLoading(false);
+      setProgressText('');
     }
   };
 
   const handleComparePix2tex = async () => {
-    if (!selectedImage) return;
+    const activeImg = imagesList.find(i => i.id === selectedImageId) || imagesList[0];
+    if (!activeImg) return;
     setIsComparing(true);
     try {
-      // Test proxy or local OCR assistant
       const res = await fetch('/api/solve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          imageBase64: selectedImage,
-          mimeType: imageMime,
+          imageBase64: activeImg.dataUrl,
+          mimeType: activeImg.mimeType,
           questionText: 'Chỉ trích xuất chính xác công thức toán đơn lẻ dưới dạng LaTeX KaTeX chuẩn nhất:',
           byok,
         }),
@@ -210,73 +364,214 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
     const sample = SAMPLE_QUESTIONS[sampleIndex];
     if (sample) {
       setQuestions(prev => [...prev, { ...sample, id: `sample-${Date.now()}` }]);
+      showNotification(`Đã nạp mẫu: ${sample.title || 'Câu hỏi chuẩn GDPT 2018'}`);
     }
   };
 
+  const activeImage = imagesList.find(img => img.id === selectedImageId) || imagesList[0];
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-      {/* Top Banner / Upload Section */}
+      {/* Toast Notification */}
+      {notificationMsg && (
+        <div className="fixed bottom-6 right-6 z-50 bg-emerald-600 text-white px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2 text-xs font-medium animate-bounce">
+          <CheckCircle2 className="w-4 h-4" />
+          <span>{notificationMsg}</span>
+        </div>
+      )}
+
+      {/* Fullscreen Image Modal */}
+      {fullscreenImage && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setFullscreenImage(null)}
+        >
+          <div className="relative max-w-5xl max-h-[90vh]">
+            <button 
+              onClick={() => setFullscreenImage(null)}
+              className="absolute -top-10 right-0 p-1.5 rounded-full bg-slate-800 text-white hover:bg-slate-700"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img 
+              src={fullscreenImage} 
+              alt="Full view" 
+              className="max-h-[85vh] max-w-full rounded-xl object-contain shadow-2xl border border-slate-700" 
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Top Banner / Upload & Multi-Image Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
         <div className="flex flex-col lg:flex-row gap-6">
-          {/* Dropzone */}
+          {/* Dropzone & Gallery */}
           <div className="flex-1 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                <Upload className="w-5 h-5 text-blue-400" />
-                Tải ảnh hoặc PDF đề thi
-              </h2>
-              <span className="text-xs text-slate-400">
-                Hỗ trợ kéo thả hoặc <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px] border border-slate-700">Ctrl + V</kbd>
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                  <Upload className="w-5 h-5 text-blue-400" />
+                  Tải nhiều ảnh đề thi hoặc Dán trực tiếp
+                </h2>
+                {imagesList.length > 0 && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-semibold border border-blue-500/30">
+                    {imagesList.length} ảnh trong hàng đợi
+                  </span>
+                )}
+              </div>
+
+              {/* Paste button & Shortcuts */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handlePasteFromClipboardButton}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-950/70 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 text-xs font-medium transition-colors shadow-sm"
+                  title="Dán ảnh chụp màn hình từ Clipboard hoặc nhấn Ctrl+V"
+                >
+                  <Clipboard className="w-3.5 h-3.5" />
+                  <span>Dán từ Clipboard (Ctrl + V)</span>
+                </button>
+
+                {imagesList.length > 0 && (
+                  <button
+                    onClick={handleClearAllImages}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-950/60 text-slate-400 hover:text-red-300 border border-slate-700 text-xs transition-colors"
+                    title="Xóa tất cả ảnh trong hàng đợi"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all flex flex-col items-center justify-center min-h-[160px] ${
-                selectedImage 
-                  ? 'border-blue-500/50 bg-blue-950/20 hover:border-blue-400' 
-                  : 'border-slate-700 hover:border-blue-500/50 bg-slate-800/40 hover:bg-slate-800/70'
-              }`}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleFileChange}
-              />
-              {selectedImage ? (
-                <div className="space-y-3 w-full">
-                  <div className="relative max-h-48 mx-auto overflow-hidden rounded-lg border border-slate-700 shadow-md">
-                    <img 
-                      src={selectedImage} 
-                      alt="Uploaded Exam" 
-                      className="max-h-48 mx-auto object-contain bg-slate-950" 
-                    />
-                  </div>
-                  <p className="text-xs text-emerald-400 font-medium flex items-center justify-center gap-1">
-                    <CheckCircle2 className="w-4 h-4" /> Đã sẵn sàng phân tích đề thi
+            {/* Hidden Multi-file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*"
+              className="hidden"
+              onChange={handleFileInputChange}
+            />
+
+            {/* If no images uploaded yet: Large Dropzone */}
+            {imagesList.length === 0 ? (
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-slate-700 hover:border-blue-500/60 rounded-xl p-8 text-center cursor-pointer transition-all bg-slate-800/40 hover:bg-slate-800/70 flex flex-col items-center justify-center min-h-[170px] space-y-3"
+              >
+                <div className="w-12 h-12 rounded-full bg-blue-600/20 text-blue-400 flex items-center justify-center">
+                  <Images className="w-6 h-6" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-200">
+                    Chọn nhiều ảnh cùng lúc hoặc nhấn <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-blue-400 font-mono text-xs border border-slate-700">Ctrl + V</kbd> để dán ảnh chụp
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Hỗ trợ tải 1, 5, 10, 20 ảnh trang đề thi (PNG, JPG, WebP) hoặc ảnh chụp màn hình cắt bằng Snipping Tool
                   </p>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="w-12 h-12 rounded-full bg-blue-600/20 text-blue-400 flex items-center justify-center mx-auto">
-                    <Upload className="w-6 h-6" />
+              </div>
+            ) : (
+              /* Multi-Image Gallery Strip */
+              <div className="space-y-3">
+                {/* Thumbnails grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 p-3 bg-slate-950/70 rounded-xl border border-slate-800 max-h-56 overflow-y-auto scrollbar-thin">
+                  {imagesList.map((img, idx) => {
+                    const isSelected = img.id === selectedImageId;
+                    return (
+                      <div
+                        key={img.id}
+                        onClick={() => setSelectedImageId(img.id)}
+                        className={`group relative rounded-lg border overflow-hidden cursor-pointer transition-all ${
+                          isSelected
+                            ? 'border-blue-500 ring-2 ring-blue-500/30 bg-blue-950/30'
+                            : 'border-slate-800 bg-slate-900/80 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="aspect-[4/3] w-full bg-slate-950 relative overflow-hidden flex items-center justify-center">
+                          <img
+                            src={img.dataUrl}
+                            alt={img.name}
+                            className="object-contain w-full h-full"
+                          />
+                          <span className="absolute top-1 left-1 bg-black/70 backdrop-blur-sm text-[10px] font-bold text-white px-1.5 py-0.5 rounded">
+                            #{idx + 1}
+                          </span>
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setFullscreenImage(img.dataUrl);
+                              }}
+                              className="p-1 rounded bg-black/60 text-white hover:bg-black/90"
+                              title="Xem phóng to"
+                            >
+                              <Maximize2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleRemoveImage(img.id, e)}
+                              className="p-1 rounded bg-red-600/80 text-white hover:bg-red-600"
+                              title="Xóa ảnh này"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="p-1.5 text-[10px] text-slate-300 truncate font-mono">
+                          {img.name}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Add more button tile */}
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="aspect-[4/3] rounded-lg border-2 border-dashed border-slate-700 hover:border-blue-500/60 bg-slate-900/50 hover:bg-slate-900 flex flex-col items-center justify-center text-slate-400 hover:text-blue-400 cursor-pointer transition-colors p-2 text-center"
+                    title="Thêm ảnh khác"
+                  >
+                    <Plus className="w-5 h-5 mb-1" />
+                    <span className="text-[10px] font-medium">+ Thêm ảnh</span>
                   </div>
-                  <p className="text-sm font-medium text-slate-200">
-                    Kéo & thả ảnh đề thi vào đây, hoặc nhấn để chọn file
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    PNG, JPG, WebP (Ảnh chụp đề thi học kỳ, đề kiểm tra, ảnh chụp màn hình)
-                  </p>
                 </div>
-              )}
-            </div>
+
+                {/* Active Image Focus preview & single scan option */}
+                {activeImage && (
+                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-xs">
+                    <div className="flex items-center gap-2 truncate">
+                      <span className="w-2 h-2 rounded-full bg-blue-400" />
+                      <span className="text-slate-300 font-medium truncate">
+                        Đang chọn: <strong>{activeImage.name}</strong> ({Math.round(activeImage.size / 1024)} KB)
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => setFullscreenImage(activeImage.dataUrl)}
+                        className="text-slate-400 hover:text-white flex items-center gap-1 text-[11px]"
+                      >
+                        <Maximize2 className="w-3 h-3" /> Phóng to
+                      </button>
+                      <button
+                        onClick={() => handleRunSingleOcr(activeImage)}
+                        disabled={isLoading}
+                        className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-blue-300 text-[11px] font-medium border border-slate-700"
+                      >
+                        Quét chỉ ảnh này
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Quick Sample Presets */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <span className="text-xs text-slate-400 flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Thử ngay mẫu chuẩn:
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Thử ngay mẫu đề chuẩn GDPT 2018:
               </span>
               <button
                 onClick={() => handleLoadSample(0)}
@@ -303,7 +598,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
           <div className="w-full lg:w-80 flex flex-col justify-between space-y-4 border-t lg:border-t-0 lg:border-l border-slate-800 lg:pl-6 pt-4 lg:pt-0">
             <div className="space-y-3">
               <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
-                <Sliders className="w-3.5 h-3.5 text-blue-400" /> Tùy chọn xuất mã \begin&#123;ex&#125;
+                <Sliders className="w-3.5 h-3.5 text-blue-400" /> Cấu hình xuất mã \begin&#123;ex&#125;
               </h3>
 
               <div>
@@ -335,7 +630,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
               </div>
 
               <div className="p-2.5 rounded-lg bg-blue-950/30 border border-blue-900/40 text-[11px] text-blue-300">
-                💡 <strong>Chuẩn gói ex_test:</strong> Mã sinh ra tuân thủ đầy đủ macro <code>\choice</code>, <code>\choiceTF</code>, <code>\True</code>, <code>\loigiai</code> dùng trong đề thi THPT Quốc Gia.
+                💡 <strong>Hỗ trợ nhiều trang:</strong> Bạn có thể dán liên tục nhiều ảnh chụp hoặc chọn nhiều file cùng lúc để hệ thống trích xuất toàn bộ câu hỏi liên tiếp vào đề thi.
               </div>
             </div>
 
@@ -350,24 +645,28 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
             {/* Action Buttons */}
             <div className="space-y-2">
               <button
-                onClick={handleRunOcr}
-                disabled={isLoading || !selectedImage}
+                onClick={handleRunBatchOcr}
+                disabled={isLoading || imagesList.length === 0}
                 className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-medium text-sm flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 transition-all"
               >
                 {isLoading ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Đang OCR & Dựng mã {`{ex}`}...</span>
+                    <span>{progressText || 'Đang OCR & Dựng mã {ex}...'}</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    <span>Bắt đầu Chuyển đổi sang LaTeX</span>
+                    <span>
+                      {imagesList.length > 1 
+                        ? `Quét tất cả ${imagesList.length} ảnh sang LaTeX` 
+                        : 'Bắt đầu Chuyển đổi sang LaTeX'}
+                    </span>
                   </>
                 )}
               </button>
 
-              {selectedImage && (
+              {imagesList.length > 0 && (
                 <button
                   onClick={handleComparePix2tex}
                   disabled={isComparing}
@@ -483,7 +782,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
                 <FileText className="w-12 h-12 mx-auto stroke-1 text-slate-600" />
                 <p className="text-sm">Chưa có câu hỏi nào trong danh sách.</p>
                 <p className="text-xs text-slate-500">
-                  Hãy tải ảnh đề thi lên hoặc bấm một trong các nút mẫu chuẩn phía trên để bắt đầu!
+                  Hãy tải ảnh đề thi lên hoặc nhấn <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px] border border-slate-700">Ctrl + V</kbd> để dán ảnh đã copy từ bàn phím!
                 </p>
               </div>
             ) : (

@@ -58,6 +58,25 @@ export const MathSolverModule: React.FC<MathSolverModuleProps> = ({
     },
   ];
 
+  // Clipboard paste listener
+  React.useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          const file = items[i].getAsFile();
+          if (file) {
+            handleImageFile(file);
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, []);
+
   const handleImageFile = (file: File) => {
     setImageMime(file.type || 'image/png');
     const reader = new FileReader();

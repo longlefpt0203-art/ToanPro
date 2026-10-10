@@ -72,20 +72,39 @@ async function callGroqOrOpenRouter(provider: 'groq' | 'openrouter', apiKey: str
   return data.choices?.[0]?.message?.content || '';
 }
 
-// 1. OCR -> ex_test
+// 1. OCR -> ex_test (Hỗ trợ tải nhiều ảnh một lúc hoặc 1 ảnh)
 app.post('/api/ocr', async (req: Request, res: Response) => {
   try {
-    const { imageBase64, mimeType = 'image/png', questionType = 'auto', includeSolution = true, byok } = req.body;
+    const { imageBase64, images, mimeType = 'image/png', questionType = 'auto', includeSolution = true, byok } = req.body;
 
-    if (!imageBase64) {
-      return res.status(400).json({ error: 'Thiếu dữ liệu ảnh (imageBase64).' });
+    // Normalize image list
+    const inputImages: { base64: string; mime: string }[] = [];
+    if (Array.isArray(images) && images.length > 0) {
+      images.forEach((img: any) => {
+        const raw = typeof img === 'string' ? img : img.imageBase64 || img.base64;
+        const mime = (typeof img === 'object' && img.mimeType) ? img.mimeType : mimeType;
+        if (raw) {
+          inputImages.push({
+            base64: raw.replace(/^data:image\/[a-z]+;base64,/, ''),
+            mime,
+          });
+        }
+      });
+    } else if (imageBase64) {
+      inputImages.push({
+        base64: imageBase64.replace(/^data:image\/[a-z]+;base64,/, ''),
+        mime: mimeType,
+      });
     }
 
-    const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+    if (inputImages.length === 0) {
+      return res.status(400).json({ error: 'Thiếu dữ liệu ảnh. Vui lòng tải lên ít nhất một ảnh hoặc dán từ clipboard.' });
+    }
 
     const promptText = `
 Bạn là chuyên gia chuyển đổi tài liệu và đề thi Toán học Việt Nam sang mã nguồn LaTeX gói 'ex_test' (chuẩn GDPT 2018 của Bộ GD&ĐT).
-Hãy phân tích hình ảnh đề thi và trích xuất TOÀN BỘ các câu hỏi sang các khối \\begin{ex}...\\end{ex}.
+Người dùng đã tải lên ${inputImages.length} hình ảnh (các trang đề thi hoặc các câu hỏi được chụp/dán từ màn hình).
+Hãy phân tích TẤT CẢ các hình ảnh này theo thứ tự từ đầu đến cuối và trích xuất TOÀN BỘ các câu hỏi thành các khối \\begin{ex}...\\end{ex}.
 
 QUY TẮC CÚ PHÁP BẮT BUỘC (Gói ex_test):
 1. Mỗi câu hỏi nằm trong khối:
@@ -124,6 +143,7 @@ Luôn kèm theo khối \\loigiai{...} với các bước lập luận rõ ràng 
 
 ${includeSolution ? 'Hãy giải chi tiết và đưa vào \\loigiai{...}.' : 'Để trống hoặc viết ngắn gọn lời giải.'}
 
+ĐÁNH SỐ THỨ TỰ: Đảm bảo trích xuất liên tục các câu hỏi xuất hiện trên các ảnh, không bỏ sót câu nào.
 CHỈ TRẢ VỀ DUY NHẤT mã LaTeX các khối \\begin{ex}...\\end{ex}, không kèm theo lời chào hay markdown thừa.
 `;
 
@@ -131,27 +151,23 @@ CHỈ TRẢ VỀ DUY NHẤT mã LaTeX các khối \\begin{ex}...\\end{ex}, khôn
 
     // Provider check
     if (byok?.selectedProvider === 'groq' && byok?.groqKey) {
-      latexOutput = await callGroqOrOpenRouter('groq', byok.groqKey, promptText, cleanBase64, mimeType);
+      latexOutput = await callGroqOrOpenRouter('groq', byok.groqKey, promptText, inputImages[0].base64, inputImages[0].mime);
     } else if (byok?.selectedProvider === 'openrouter' && byok?.openRouterKey) {
-      latexOutput = await callGroqOrOpenRouter('openrouter', byok.openRouterKey, promptText, cleanBase64, mimeType);
+      latexOutput = await callGroqOrOpenRouter('openrouter', byok.openRouterKey, promptText, inputImages[0].base64, inputImages[0].mime);
     } else {
-      // Default to Gemini (custom or server key)
+      // Default to Gemini (custom or server key) with support for all images as parts
       const ai = getGeminiClient(byok?.geminiKey);
+      const parts: any[] = inputImages.map((img) => ({
+        inlineData: {
+          mimeType: img.mime,
+          data: img.base64,
+        },
+      }));
+      parts.push({ text: promptText });
+
       const response = await ai.models.generateContent({
         model: 'gemini-3.8-flash',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: cleanBase64,
-              },
-            },
-            {
-              text: promptText,
-            },
-          ],
-        },
+        contents: { parts },
       });
       latexOutput = response.text || '';
     }
@@ -159,7 +175,7 @@ CHỈ TRẢ VỀ DUY NHẤT mã LaTeX các khối \\begin{ex}...\\end{ex}, khôn
     // Clean backticks
     latexOutput = latexOutput.replace(/```latex/g, '').replace(/```/g, '').trim();
 
-    return res.json({ success: true, latex: latexOutput });
+    return res.json({ success: true, latex: latexOutput, count: inputImages.length });
   } catch (error: any) {
     console.error('Error in /api/ocr:', error);
     return res.status(500).json({ error: error.message || 'Lỗi xử lý OCR đề thi.' });

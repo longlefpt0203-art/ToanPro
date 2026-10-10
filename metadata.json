@@ -1,0 +1,6 @@
+{
+  "name": "ExTeX Studio - Chuyển Đề Thi LaTeX, Giải Toán & TikZ",
+  "description": "Nền tảng chuyển đổi đề thi ảnh/PDF sang LaTeX gói ex_test chuẩn GDPT 2018, giải toán chi tiết và tạo hình TikZ trực quan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

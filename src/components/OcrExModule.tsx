@@ -28,6 +28,8 @@ import { buildLatexEx, parseExBlocks, renderLatexToHtml } from '../lib/latexHelp
 import { SAMPLE_QUESTIONS } from '../data/samples';
 import { incrementQuotaCount } from '../lib/storage';
 
+import { optimizeImageForOcr, fetchSafeJson } from '../lib/imageHelper';
+
 export interface UploadedImageItem {
   id: string;
   dataUrl: string;
@@ -55,6 +57,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [progressText, setProgressText] = useState<string>('');
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'preview' | 'latex' | 'compare'>('preview');
@@ -84,48 +87,51 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
     }
   }, [questions]);
 
-  // Handle multiple files conversion to base64
-  const processFiles = (files: FileList | File[], source: 'upload' | 'paste' = 'upload') => {
+  // Handle multiple files conversion & auto-compression
+  const processFiles = async (files: FileList | File[], source: 'upload' | 'paste' = 'upload') => {
     setErrorMsg(null);
+    const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+    if (validFiles.length === 0) return;
+
+    showNotification(`Đang nạp và tối ưu ${validFiles.length} ảnh...`);
     const newItems: UploadedImageItem[] = [];
-    const count = files.length;
-    let loaded = 0;
 
-    Array.from(files).forEach((file, index) => {
-      if (!file.type.startsWith('image/')) return;
+    for (let index = 0; index < validFiles.length; index++) {
+      const file = validFiles[index];
+      const rawDataUrl = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target?.result as string);
+        reader.readAsDataURL(file);
+      });
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        const now = new Date();
-        const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-        const name = source === 'paste' 
-          ? `Ảnh chụp Clipboard (${timeStr})` 
-          : file.name || `Trang ${imagesList.length + index + 1}`;
+      // Compress and optimize image size on the client
+      const optimized = await optimizeImageForOcr(rawDataUrl);
 
-        newItems.push({
-          id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          dataUrl,
-          mimeType: file.type || 'image/png',
-          name,
-          size: file.size,
-          status: 'idle',
-        });
+      const now = new Date();
+      const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+      const name = source === 'paste' 
+        ? `Ảnh dán (${timeStr})` 
+        : file.name || `Trang ${imagesList.length + index + 1}`;
 
-        loaded++;
-        if (loaded === count) {
-          setImagesList(prev => {
-            const updated = [...prev, ...newItems];
-            if (!selectedImageId && updated.length > 0) {
-              setSelectedImageId(updated[0].id);
-            }
-            return updated;
-          });
-          showNotification(`Đã nhận ${newItems.length} ảnh (${source === 'paste' ? 'từ Clipboard / Ctrl+V' : 'tải lên'})!`);
-        }
-      };
-      reader.readAsDataURL(file);
+      newItems.push({
+        id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        dataUrl: optimized.dataUrl,
+        mimeType: optimized.mimeType,
+        name,
+        size: optimized.size,
+        status: 'idle',
+      });
+    }
+
+    setImagesList(prev => {
+      const updated = [...prev, ...newItems];
+      if (!selectedImageId && updated.length > 0) {
+        setSelectedImageId(updated[0].id);
+      }
+      return updated;
     });
+
+    showNotification(`Đã thêm ${newItems.length} ảnh (${source === 'paste' ? 'từ Clipboard / Ctrl+V' : 'tải lên'})!`);
   };
 
   const showNotification = (msg: string) => {
@@ -137,13 +143,19 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
-      if (!items) return;
-
+      const files = e.clipboardData?.files;
       const imageFiles: File[] = [];
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf('image') !== -1) {
-          const blob = items[i].getAsFile();
-          if (blob) imageFiles.push(blob);
+
+      if (files && files.length > 0) {
+        for (let i = 0; i < files.length; i++) {
+          if (files[i].type.startsWith('image/')) imageFiles.push(files[i]);
+        }
+      } else if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf('image') !== -1) {
+            const blob = items[i].getAsFile();
+            if (blob) imageFiles.push(blob);
+          }
         }
       }
 
@@ -207,7 +219,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
     setSelectedImageId(null);
   };
 
-  // Run Batch OCR on all uploaded images
+  // Run Batch OCR with resilient sequential execution
   const handleRunBatchOcr = async () => {
     if (imagesList.length === 0) {
       setErrorMsg('Vui lòng tải lên ít nhất một ảnh hoặc dán ảnh từ clipboard (Ctrl+V).');
@@ -216,54 +228,74 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
 
     setIsLoading(true);
     setErrorMsg(null);
-    setProgressText(`Đang phân tích ${imagesList.length} ảnh đề thi...`);
+    setBatchProgress({ current: 0, total: imagesList.length });
+
+    let totalNewQuestions = 0;
+    const errors: string[] = [];
 
     try {
-      const payloadImages = imagesList.map(img => ({
-        imageBase64: img.dataUrl,
-        mimeType: img.mimeType,
-      }));
+      // Process each image sequentially to prevent huge payload timeouts
+      for (let i = 0; i < imagesList.length; i++) {
+        const currentImg = imagesList[i];
+        setBatchProgress({ current: i + 1, total: imagesList.length });
+        setProgressText(`Đang phân tích ảnh ${i + 1}/${imagesList.length} (${currentImg.name})...`);
 
-      const res = await fetch('/api/ocr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          images: payloadImages,
-          questionType: questionTypeChoice,
-          includeSolution,
-          byok,
-        }),
-      });
+        try {
+          const res = await fetch('/api/ocr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              imageBase64: currentImg.dataUrl,
+              mimeType: currentImg.mimeType,
+              questionType: questionTypeChoice,
+              includeSolution,
+              byok,
+            }),
+          });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Lỗi khi nhận diện đề thi.');
+          const data = await fetchSafeJson(res);
+          if (!res.ok) {
+            throw new Error(data.error || `Lỗi ảnh ${i + 1}`);
+          }
+
+          if (data.latex) {
+            incrementQuotaCount();
+            const parsed = parseExBlocks(data.latex);
+            if (parsed.length > 0) {
+              setQuestions(prev => [...prev, ...parsed]);
+              totalNewQuestions += parsed.length;
+              // Expand solutions
+              const newExp: Record<string, boolean> = { ...expandedSolutions };
+              parsed.forEach(p => (newExp[p.id] = true));
+              setExpandedSolutions(newExp);
+            } else {
+              const single: ExamQuestion = {
+                id: `q-${Date.now()}-${i}`,
+                statement: data.latex,
+                type: 'essay',
+                rawLatex: data.latex,
+              };
+              setQuestions(prev => [...prev, single]);
+              totalNewQuestions += 1;
+            }
+          }
+        } catch (itemErr: any) {
+          console.error(`Error processing image ${i + 1}:`, itemErr);
+          errors.push(`Ảnh #${i + 1} (${currentImg.name}): ${itemErr.message}`);
+        }
       }
 
-      if (data.latex) {
-        incrementQuotaCount();
-        const parsed = parseExBlocks(data.latex);
-        if (parsed.length > 0) {
-          setQuestions(prev => [...prev, ...parsed]);
-          const newExp: Record<string, boolean> = { ...expandedSolutions };
-          parsed.forEach(p => (newExp[p.id] = true));
-          setExpandedSolutions(newExp);
-          showNotification(`Đã trích xuất thành công ${parsed.length} câu hỏi vào danh sách đề thi!`);
-        } else {
-          const single: ExamQuestion = {
-            id: `q-${Date.now()}`,
-            statement: data.latex,
-            type: 'essay',
-            rawLatex: data.latex,
-          };
-          setQuestions(prev => [...prev, single]);
-        }
+      if (errors.length > 0) {
+        setErrorMsg(`Đã xong ${totalNewQuestions} câu, nhưng có lỗi ở ${errors.length} ảnh:\n${errors.join('\n')}`);
+      } else {
+        showNotification(`Đã trích xuất thành công ${totalNewQuestions} câu hỏi từ ${imagesList.length} ảnh!`);
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'Không thể kết nối đến máy chủ AI.');
     } finally {
       setIsLoading(false);
       setProgressText('');
+      setBatchProgress(null);
     }
   };
 
@@ -271,7 +303,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
   const handleRunSingleOcr = async (imgItem: UploadedImageItem) => {
     setIsLoading(true);
     setErrorMsg(null);
-    setProgressText(`Đang phân tích ảnh: ${imgItem.name}...`);
+    setProgressText(`Đang phân tích: ${imgItem.name}...`);
 
     try {
       const res = await fetch('/api/ocr', {
@@ -286,7 +318,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
         }),
       });
 
-      const data = await res.json();
+      const data = await fetchSafeJson(res);
       if (!res.ok) throw new Error(data.error || 'Lỗi khi nhận diện ảnh.');
 
       if (data.latex) {
@@ -323,7 +355,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
           byok,
         }),
       });
-      const data = await res.json();
+      const data = await fetchSafeJson(res);
       if (data.latex) {
         setPix2texResult(data.latex);
       }
@@ -652,7 +684,7 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
                 {isLoading ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>{progressText || 'Đang OCR & Dựng mã {ex}...'}</span>
+                    <span className="truncate">{progressText || 'Đang OCR & Dựng mã {ex}...'}</span>
                   </>
                 ) : (
                   <>
@@ -665,6 +697,22 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
                   </>
                 )}
               </button>
+
+              {/* Progress bar during batch run */}
+              {isLoading && batchProgress && (
+                <div className="space-y-1 pt-1">
+                  <div className="flex justify-between text-[11px] text-blue-300">
+                    <span>Tiến độ phân tích:</span>
+                    <span className="font-mono font-bold">{batchProgress.current} / {batchProgress.total} ({Math.round((batchProgress.current / batchProgress.total) * 100)}%)</span>
+                  </div>
+                  <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className="bg-gradient-to-r from-blue-500 to-cyan-400 h-full transition-all duration-300 rounded-full"
+                      style={{ width: `${Math.max(5, Math.round((batchProgress.current / batchProgress.total) * 100))}%` }}
+                    />
+                  </div>
+                </div>
+              )}
 
               {imagesList.length > 0 && (
                 <button

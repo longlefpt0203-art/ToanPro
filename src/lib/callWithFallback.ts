@@ -5,7 +5,7 @@ import { fetchSafeJson } from './imageHelper';
  * Direct client-side Gemini REST API call when running on static hosting (Vercel without backend, GitHub Pages)
  */
 async function callDirectGemini(apiKey: string, prompt: string, imageBase64?: string, mimeType = 'image/png'): Promise<string> {
-  const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest'];
+  const candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest'];
   let lastError: Error | null = null;
 
   for (const model of candidateModels) {

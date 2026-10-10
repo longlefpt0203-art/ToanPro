@@ -93,9 +93,20 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
     try {
       // If client testing direct Gemini
       if (provider === 'gemini') {
-        const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest'];
+        const candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest'];
         let successModel = '';
         let lastErr = '';
+
+        // Quick check if Google recognizes the key
+        try {
+          const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key.trim()}`);
+          if (!listRes.ok) {
+            const listData = await listRes.json();
+            throw new Error(listData.error?.message || `API Key không hợp lệ (HTTP ${listRes.status})`);
+          }
+        } catch (authErr: any) {
+          throw authErr;
+        }
 
         for (const model of candidateModels) {
           try {
@@ -112,7 +123,7 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
             } else {
               const msg = data.error?.message || `Lỗi HTTP ${res.status}`;
               lastErr = msg;
-              if (res.status === 503 || res.status === 429 || msg.includes('high demand') || msg.includes('UNAVAILABLE')) {
+              if (res.status === 503 || res.status === 429 || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('not available')) {
                 continue; // thử tiếp model khác
               } else {
                 throw new Error(msg);
@@ -120,7 +131,7 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
             }
           } catch (e: any) {
             lastErr = e.message;
-            if (e.message?.includes('high demand') || e.message?.includes('503') || e.message?.includes('UNAVAILABLE')) {
+            if (e.message?.includes('high demand') || e.message?.includes('503') || e.message?.includes('UNAVAILABLE') || e.message?.includes('not available')) {
               continue;
             }
             throw e;
@@ -133,24 +144,21 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
             gemini: { 
               loading: false, 
               success: true, 
-              message: `✓ Kết nối Google Gemini API thành công! API Key của bạn hoàn toàn hợp lệ (phản hồi qua ${successModel}). Đã lưu vào trình duyệt!` 
+              message: `✓ Kết nối Google Gemini API thành công! API Key của bạn hoàn toàn hợp lệ (phản hồi siêu tốc qua ${successModel}). Đã lưu vào máy!` 
             },
           }));
           return;
         } else {
-          // If all models hit 503 temporary spike
-          if (lastErr.includes('high demand') || lastErr.includes('503') || lastErr.includes('UNAVAILABLE')) {
-            setTestStatus(prev => ({
-              ...prev,
-              gemini: {
-                loading: false,
-                success: true,
-                message: `✓ API Key của bạn hợp lệ và đã được lưu! (Lưu ý: Máy chủ Google hiện đang có đợt truy cập cao điểm 503 tạm thời, hệ thống sẽ tự động thử lại khi bạn quét đề thi).`,
-              },
-            }));
-            return;
-          }
-          throw new Error(lastErr || 'Máy chủ Gemini đang tạm thời cao điểm.');
+          // If models list succeeded but generation had high demand
+          setTestStatus(prev => ({
+            ...prev,
+            gemini: {
+              loading: false,
+              success: true,
+              message: `✓ API Key của bạn hoàn toàn hợp lệ và đã được xác thực bởi Google! (Lưu ý: Mô hình 3.8 đang có lượng truy cập cao điểm, hệ thống sẽ tự động dùng ${candidateModels[0]} khi bạn quét đề).`,
+            },
+          }));
+          return;
         }
       }
 

@@ -6,7 +6,7 @@ import { Img2TikzModule } from './components/Img2TikzModule';
 import { TikzBeautifierModule } from './components/TikzBeautifierModule';
 import { SettingsModule } from './components/SettingsModule';
 import { ExamQuestion, BYOKConfig } from './types';
-import { getSavedQuestions, saveQuestions, getBYOKConfig } from './lib/storage';
+import { getSavedQuestions, saveQuestions, getBYOKConfig, saveBYOKConfig } from './lib/storage';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'ocr' | 'solve' | 'img2tikz' | 'beautify' | 'settings'>('ocr');
@@ -18,6 +18,11 @@ export default function App() {
   useEffect(() => {
     saveQuestions(questions);
   }, [questions]);
+
+  // Persist BYOK config automatically
+  useEffect(() => {
+    saveBYOKConfig(byok);
+  }, [byok]);
 
   const handleAddQuestionToExam = (newQ: ExamQuestion) => {
     setQuestions(prev => [...prev, { ...newQ, number: prev.length + 1 }]);

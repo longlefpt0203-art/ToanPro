@@ -19,19 +19,37 @@ export const DEFAULT_BYOK_CONFIG: BYOKConfig = {
 
 export function getBYOKConfig(): BYOKConfig {
   try {
-    const raw = localStorage.getItem(BYOK_CONFIG_KEY);
+    const raw = typeof window !== 'undefined' ? localStorage.getItem(BYOK_CONFIG_KEY) : null;
     if (!raw) return DEFAULT_BYOK_CONFIG;
-    return { ...DEFAULT_BYOK_CONFIG, ...JSON.parse(raw) };
-  } catch {
+    const parsed = JSON.parse(raw);
+    return {
+      ...DEFAULT_BYOK_CONFIG,
+      ...parsed,
+      geminiKey: typeof parsed.geminiKey === 'string' ? parsed.geminiKey.trim() : '',
+      groqKey: typeof parsed.groqKey === 'string' ? parsed.groqKey.trim() : '',
+      openRouterKey: typeof parsed.openRouterKey === 'string' ? parsed.openRouterKey.trim() : '',
+      pix2texUrl: typeof parsed.pix2texUrl === 'string' ? parsed.pix2texUrl.trim() : DEFAULT_BYOK_CONFIG.pix2texUrl,
+    };
+  } catch (e) {
+    console.error('Lỗi đọc BYOK config từ localStorage:', e);
     return DEFAULT_BYOK_CONFIG;
   }
 }
 
 export function saveBYOKConfig(config: BYOKConfig): void {
   try {
-    localStorage.setItem(BYOK_CONFIG_KEY, JSON.stringify(config));
+    const sanitized: BYOKConfig = {
+      ...config,
+      geminiKey: (config.geminiKey || '').trim(),
+      groqKey: (config.groqKey || '').trim(),
+      openRouterKey: (config.openRouterKey || '').trim(),
+      pix2texUrl: (config.pix2texUrl || '').trim(),
+    };
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(BYOK_CONFIG_KEY, JSON.stringify(sanitized));
+    }
   } catch (e) {
-    console.error('Failed to save BYOK config:', e);
+    console.error('Failed to save BYOK config to localStorage:', e);
   }
 }
 

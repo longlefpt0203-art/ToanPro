@@ -460,6 +460,24 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
               </div>
             </div>
 
+            {/* API Key Status Bar */}
+            {byok.geminiKey ? (
+              <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-800/40 text-[11px] text-emerald-300">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  API Key đã lưu & sẵn sàng: <code className="font-mono bg-emerald-900/40 px-1 py-0.5 rounded">{byok.geminiKey.slice(0, 8)}...{byok.geminiKey.slice(-4)}</code>
+                </span>
+                <span className="text-emerald-400/80 text-[10px]">Đã ghi nhớ trong trình duyệt (localStorage)</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-blue-950/30 border border-blue-800/40 text-[11px] text-blue-300">
+                <span className="flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                  Chưa lưu Gemini API Key cá nhân. Vào tab <strong>Cài đặt BYOK</strong> để nhập key nếu chạy trên Vercel.
+                </span>
+              </div>
+            )}
+
             {/* Hidden Multi-file input */}
             <input
               ref={fileInputRef}

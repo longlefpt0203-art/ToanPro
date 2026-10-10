@@ -19,6 +19,7 @@ import { BYOKConfig, TikZProject } from '../types';
 import { SAMPLE_TIKZ_PROJECTS } from '../data/samples';
 import { parseAndRenderTikZToSvg } from '../lib/tikzVisualizer';
 import { incrementQuotaCount, getSavedTikZProjects, saveTikZProjects } from '../lib/storage';
+import { callWithFallbackImg2Tikz, callWithFallbackTikzRefine } from '../lib/callWithFallback';
 
 interface Img2TikzModuleProps {
   byok: BYOKConfig;
@@ -84,23 +85,14 @@ export const Img2TikzModule: React.FC<Img2TikzModuleProps> = ({
     setErrorMessage(null);
 
     try {
-      const res = await fetch('/api/img2tikz', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: selectedImage,
-          mimeType: imageMime,
-          byok,
-        }),
+      const tikz = await callWithFallbackImg2Tikz({
+        imageBase64: selectedImage,
+        mimeType: imageMime,
+        byok,
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Lỗi khi chuyển ảnh sang TikZ.');
-      }
-
-      if (data.tikz) {
-        setActiveTikzCode(data.tikz);
+      if (tikz) {
+        setActiveTikzCode(tikz);
         incrementQuotaCount();
       }
     } catch (err: any) {
@@ -117,23 +109,14 @@ export const Img2TikzModule: React.FC<Img2TikzModuleProps> = ({
     setErrorMessage(null);
 
     try {
-      const res = await fetch('/api/tikz-refine', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          currentTikz: activeTikzCode,
-          instruction: refinePrompt,
-          byok,
-        }),
+      const refinedTikz = await callWithFallbackTikzRefine({
+        currentTikz: activeTikzCode,
+        instruction: refinePrompt,
+        byok,
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Lỗi tinh chỉnh TikZ.');
-      }
-
-      if (data.tikz) {
-        setActiveTikzCode(data.tikz);
+      if (refinedTikz) {
+        setActiveTikzCode(refinedTikz);
         setRefinePrompt('');
         incrementQuotaCount();
       }

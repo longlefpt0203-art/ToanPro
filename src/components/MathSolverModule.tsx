@@ -16,6 +16,7 @@ import {
 import { ExamQuestion, BYOKConfig, MathSolveItem } from '../types';
 import { renderLatexToHtml, parseExBlocks } from '../lib/latexHelper';
 import { getSavedMathSolutions, saveMathSolutions, incrementQuotaCount } from '../lib/storage';
+import { callWithFallbackSolve } from '../lib/callWithFallback';
 
 interface MathSolverModuleProps {
   byok: BYOKConfig;
@@ -97,33 +98,24 @@ export const MathSolverModule: React.FC<MathSolverModuleProps> = ({
     setAddedToExam(false);
 
     try {
-      const res = await fetch('/api/solve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          questionText: questionInput,
-          imageBase64: selectedImage,
-          mimeType: imageMime,
-          style: solveStyle,
-          byok,
-        }),
+      const latex = await callWithFallbackSolve({
+        questionText: questionInput,
+        imageBase64: selectedImage || undefined,
+        mimeType: imageMime,
+        style: solveStyle,
+        byok,
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Lỗi khi giải toán.');
-      }
-
-      if (data.latex) {
-        setLatexResult(data.latex);
+      if (latex) {
+        setLatexResult(latex);
         incrementQuotaCount();
 
         // Save to local history
         const newItem: MathSolveItem = {
           id: `sol-${Date.now()}`,
           question: questionInput || 'Giải từ ảnh',
-          solution: data.latex,
-          rawLatex: data.latex,
+          solution: latex,
+          rawLatex: latex,
           createdAt: Date.now(),
         };
         const updated = [newItem, ...historyItems.slice(0, 19)];

@@ -15,6 +15,7 @@ import { BYOKConfig } from '../types';
 import { formatTikZCode, FormattedTikZResult } from '../lib/tikzFormatter';
 import { parseAndRenderTikZToSvg } from '../lib/tikzVisualizer';
 import { incrementQuotaCount } from '../lib/storage';
+import { callWithFallbackTikzRefine } from '../lib/callWithFallback';
 
 interface TikzBeautifierModuleProps {
   initialCode: string;
@@ -72,19 +73,14 @@ export const TikzBeautifierModule: React.FC<TikzBeautifierModuleProps> = ({
     setAiSuggestions([]);
 
     try {
-      const res = await fetch('/api/tikz-refine', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          currentTikz: outputCode || inputCode,
-          instruction: 'Tối ưu hóa mã TikZ: căn chỉnh nhãn label tránh đè hình, chuẩn hóa tỷ lệ scale, sử dụng các macro gọn gàng, và gợi ý 3 điểm cải tiến.',
-          byok,
-        }),
+      const refinedTikz = await callWithFallbackTikzRefine({
+        currentTikz: outputCode || inputCode,
+        instruction: 'Tối ưu hóa mã TikZ: căn chỉnh nhãn label tránh đè hình, chuẩn hóa tỷ lệ scale, sử dụng các macro gọn gàng, và gợi ý 3 điểm cải tiến.',
+        byok,
       });
 
-      const data = await res.json();
-      if (data.tikz) {
-        setOutputCode(data.tikz);
+      if (refinedTikz) {
+        setOutputCode(refinedTikz);
         incrementQuotaCount();
         setAiSuggestions([
           'Đã chuẩn hóa tọa độ và làm mượt góc nối đường nét với line join=round.',

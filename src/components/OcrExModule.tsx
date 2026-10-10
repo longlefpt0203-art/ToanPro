@@ -29,6 +29,7 @@ import { SAMPLE_QUESTIONS } from '../data/samples';
 import { incrementQuotaCount } from '../lib/storage';
 
 import { optimizeImageForOcr, fetchSafeJson } from '../lib/imageHelper';
+import { callWithFallbackOcr } from '../lib/callWithFallback';
 
 export interface UploadedImageItem {
   id: string;
@@ -241,39 +242,29 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
         setProgressText(`Đang phân tích ảnh ${i + 1}/${imagesList.length} (${currentImg.name})...`);
 
         try {
-          const res = await fetch('/api/ocr', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              imageBase64: currentImg.dataUrl,
-              mimeType: currentImg.mimeType,
-              questionType: questionTypeChoice,
-              includeSolution,
-              byok,
-            }),
+          const latex = await callWithFallbackOcr({
+            imageBase64: currentImg.dataUrl,
+            mimeType: currentImg.mimeType,
+            questionType: questionTypeChoice,
+            includeSolution,
+            byok,
           });
 
-          const data = await fetchSafeJson(res);
-          if (!res.ok) {
-            throw new Error(data.error || `Lỗi ảnh ${i + 1}`);
-          }
-
-          if (data.latex) {
+          if (latex) {
             incrementQuotaCount();
-            const parsed = parseExBlocks(data.latex);
+            const parsed = parseExBlocks(latex);
             if (parsed.length > 0) {
               setQuestions(prev => [...prev, ...parsed]);
               totalNewQuestions += parsed.length;
-              // Expand solutions
               const newExp: Record<string, boolean> = { ...expandedSolutions };
               parsed.forEach(p => (newExp[p.id] = true));
               setExpandedSolutions(newExp);
             } else {
               const single: ExamQuestion = {
                 id: `q-${Date.now()}-${i}`,
-                statement: data.latex,
+                statement: latex,
                 type: 'essay',
-                rawLatex: data.latex,
+                rawLatex: latex,
               };
               setQuestions(prev => [...prev, single]);
               totalNewQuestions += 1;
@@ -306,24 +297,17 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
     setProgressText(`Đang phân tích: ${imgItem.name}...`);
 
     try {
-      const res = await fetch('/api/ocr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: imgItem.dataUrl,
-          mimeType: imgItem.mimeType,
-          questionType: questionTypeChoice,
-          includeSolution,
-          byok,
-        }),
+      const latex = await callWithFallbackOcr({
+        imageBase64: imgItem.dataUrl,
+        mimeType: imgItem.mimeType,
+        questionType: questionTypeChoice,
+        includeSolution,
+        byok,
       });
 
-      const data = await fetchSafeJson(res);
-      if (!res.ok) throw new Error(data.error || 'Lỗi khi nhận diện ảnh.');
-
-      if (data.latex) {
+      if (latex) {
         incrementQuotaCount();
-        const parsed = parseExBlocks(data.latex);
+        const parsed = parseExBlocks(latex);
         if (parsed.length > 0) {
           setQuestions(prev => [...prev, ...parsed]);
           const newExp: Record<string, boolean> = { ...expandedSolutions };

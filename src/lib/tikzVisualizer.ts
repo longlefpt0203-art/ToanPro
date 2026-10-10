@@ -10,7 +10,18 @@ export interface RenderedTikZGraphic {
 }
 
 export function parseAndRenderTikZToSvg(tikzCode: string, width = 600, height = 400): RenderedTikZGraphic {
-  const cleanCode = tikzCode.trim();
+  const cleanCode = (tikzCode || '').trim();
+
+  if (!cleanCode) {
+    return {
+      svgString: `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" fill="#64748b" font-size="13" font-family="system-ui, sans-serif">Chưa có mã TikZ trong phiên này. Hãy tải ảnh hoặc dán ảnh để tạo hình!</text>
+      </svg>`,
+      viewBox: `0 0 ${width} ${height}`,
+      hasErrors: false,
+      type: 'general',
+    };
+  }
 
   // Check if this is a tkz-tab (Bảng biến thiên / Bảng xét dấu)
   if (cleanCode.includes('\\tkzTabInit') || cleanCode.includes('\\tkzTabVar') || cleanCode.includes('\\tkzTabLine')) {

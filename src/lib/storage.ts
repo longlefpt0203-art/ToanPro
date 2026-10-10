@@ -1,5 +1,4 @@
 import { BYOKConfig, ExamQuestion, MathSolveItem, QuotaStats, TikZProject } from '../types';
-import { SAMPLE_QUESTIONS, SAMPLE_TIKZ_PROJECTS } from '../data/samples';
 
 const BYOK_CONFIG_KEY = 'extex_byok_config';
 const QUOTA_STATS_KEY = 'extex_quota_stats';
@@ -17,12 +16,34 @@ export const DEFAULT_BYOK_CONFIG: BYOKConfig = {
   dailyQuotaLimit: 1500,
 };
 
+// In-memory memory cache in case browser storage is blocked
+let memoryBYOKConfig: BYOKConfig | null = null;
+
 export function getBYOKConfig(): BYOKConfig {
   try {
-    const raw = typeof window !== 'undefined' ? localStorage.getItem(BYOK_CONFIG_KEY) : null;
+    let raw: string | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        raw = localStorage.getItem(BYOK_CONFIG_KEY);
+      } catch {
+        // localStorage blocked or restricted
+      }
+      if (!raw) {
+        try {
+          raw = sessionStorage.getItem(BYOK_CONFIG_KEY);
+        } catch {
+          // sessionStorage blocked
+        }
+      }
+    }
+
+    if (!raw && memoryBYOKConfig) {
+      return memoryBYOKConfig;
+    }
     if (!raw) return DEFAULT_BYOK_CONFIG;
+
     const parsed = JSON.parse(raw);
-    return {
+    const resolved: BYOKConfig = {
       ...DEFAULT_BYOK_CONFIG,
       ...parsed,
       geminiKey: typeof parsed.geminiKey === 'string' ? parsed.geminiKey.trim() : '',
@@ -30,9 +51,11 @@ export function getBYOKConfig(): BYOKConfig {
       openRouterKey: typeof parsed.openRouterKey === 'string' ? parsed.openRouterKey.trim() : '',
       pix2texUrl: typeof parsed.pix2texUrl === 'string' ? parsed.pix2texUrl.trim() : DEFAULT_BYOK_CONFIG.pix2texUrl,
     };
+    memoryBYOKConfig = resolved;
+    return resolved;
   } catch (e) {
-    console.error('Lỗi đọc BYOK config từ localStorage:', e);
-    return DEFAULT_BYOK_CONFIG;
+    console.error('Lỗi đọc BYOK config từ storage:', e);
+    return memoryBYOKConfig || DEFAULT_BYOK_CONFIG;
   }
 }
 
@@ -45,11 +68,32 @@ export function saveBYOKConfig(config: BYOKConfig): void {
       openRouterKey: (config.openRouterKey || '').trim(),
       pix2texUrl: (config.pix2texUrl || '').trim(),
     };
+    memoryBYOKConfig = sanitized;
+
     if (typeof window !== 'undefined') {
-      localStorage.setItem(BYOK_CONFIG_KEY, JSON.stringify(sanitized));
+      const jsonStr = JSON.stringify(sanitized);
+      try {
+        localStorage.setItem(BYOK_CONFIG_KEY, jsonStr);
+      } catch {
+        // Ignored
+      }
+      try {
+        sessionStorage.setItem(BYOK_CONFIG_KEY, jsonStr);
+      } catch {
+        // Ignored
+      }
+
+      // Sync with server session if custom geminiKey exists
+      if (sanitized.geminiKey) {
+        fetch('/api/byok-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ geminiKey: sanitized.geminiKey }),
+        }).catch(() => {});
+      }
     }
   } catch (e) {
-    console.error('Failed to save BYOK config to localStorage:', e);
+    console.error('Failed to save BYOK config:', e);
   }
 }
 
@@ -79,58 +123,40 @@ export function incrementQuotaCount(): QuotaStats {
   return stats;
 }
 
-export function getSavedQuestions(): ExamQuestion[] {
+// Purge old saved session questions from browser storage immediately
+if (typeof window !== 'undefined') {
   try {
-    const raw = localStorage.getItem(QUESTIONS_KEY);
-    if (!raw) return SAMPLE_QUESTIONS;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : SAMPLE_QUESTIONS;
+    localStorage.removeItem(QUESTIONS_KEY);
+    localStorage.removeItem(TIKZ_PROJECTS_KEY);
+    localStorage.removeItem(MATH_SOLUTIONS_KEY);
+    localStorage.removeItem('extex_questions');
+    localStorage.removeItem('extex_questions_list');
   } catch {
-    return SAMPLE_QUESTIONS;
+    // Ignore
   }
 }
 
-export function saveQuestions(questions: ExamQuestion[]): void {
-  try {
-    localStorage.setItem(QUESTIONS_KEY, JSON.stringify(questions));
-  } catch (e) {
-    console.error('Failed to save questions:', e);
-  }
+export function getSavedQuestions(): ExamQuestion[] {
+  // Phiên nào thì đúng phiên đó: không nạp câu mẫu hay phiên cũ
+  return [];
+}
+
+export function saveQuestions(_questions: ExamQuestion[]): void {
+  // Phiên nào thì đúng phiên đó: không lưu sang các phiên sau
 }
 
 export function getSavedTikZProjects(): TikZProject[] {
-  try {
-    const raw = localStorage.getItem(TIKZ_PROJECTS_KEY);
-    if (!raw) return SAMPLE_TIKZ_PROJECTS;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : SAMPLE_TIKZ_PROJECTS;
-  } catch {
-    return SAMPLE_TIKZ_PROJECTS;
-  }
+  return [];
 }
 
-export function saveTikZProjects(projects: TikZProject[]): void {
-  try {
-    localStorage.setItem(TIKZ_PROJECTS_KEY, JSON.stringify(projects));
-  } catch (e) {
-    console.error('Failed to save TikZ projects:', e);
-  }
+export function saveTikZProjects(_projects: TikZProject[]): void {
+  // Session-only
 }
 
 export function getSavedMathSolutions(): MathSolveItem[] {
-  try {
-    const raw = localStorage.getItem(MATH_SOLUTIONS_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
+  return [];
 }
 
-export function saveMathSolutions(items: MathSolveItem[]): void {
-  try {
-    localStorage.setItem(MATH_SOLUTIONS_KEY, JSON.stringify(items));
-  } catch (e) {
-    console.error('Failed to save math solutions:', e);
-  }
+export function saveMathSolutions(_items: MathSolveItem[]): void {
+  // Session-only
 }

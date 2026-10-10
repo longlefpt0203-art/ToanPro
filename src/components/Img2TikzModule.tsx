@@ -16,9 +16,8 @@ import {
   Image as ImageIcon
 } from 'lucide-react';
 import { BYOKConfig, TikZProject } from '../types';
-import { SAMPLE_TIKZ_PROJECTS } from '../data/samples';
 import { parseAndRenderTikZToSvg } from '../lib/tikzVisualizer';
-import { incrementQuotaCount, getSavedTikZProjects, saveTikZProjects } from '../lib/storage';
+import { incrementQuotaCount } from '../lib/storage';
 import { callWithFallbackImg2Tikz, callWithFallbackTikzRefine } from '../lib/callWithFallback';
 
 interface Img2TikzModuleProps {
@@ -36,8 +35,8 @@ export const Img2TikzModule: React.FC<Img2TikzModuleProps> = ({
   const [isRefining, setIsRefining] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Active TikZ Code
-  const [activeTikzCode, setActiveTikzCode] = useState<string>(SAMPLE_TIKZ_PROJECTS[0].code);
+  // Active TikZ Code (phiên nào đúng phiên đó, ban đầu để trống)
+  const [activeTikzCode, setActiveTikzCode] = useState<string>('');
   const [refinePrompt, setRefinePrompt] = useState<string>('');
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
@@ -164,26 +163,13 @@ export const Img2TikzModule: React.FC<Img2TikzModuleProps> = ({
             </div>
           </div>
 
-          {/* Quick Presets */}
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-400">Hình mẫu:</span>
-            {SAMPLE_TIKZ_PROJECTS.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setActiveTikzCode(p.code)}
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-              >
-                {p.title.split(' ')[0]} {p.title.split(' ')[1]}
-              </button>
-            ))}
-          </div>
         </div>
 
         {/* Upload & Convert Grid */}
         <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-2 space-y-3">
             <label className="text-xs font-semibold text-slate-300 block">
-              Tải ảnh hình vẽ đề thi (hoặc chọn hình mẫu phía trên):
+              Tải hoặc dán ảnh hình vẽ đề thi (Ctrl + V):
             </label>
             <div
               onClick={() => document.getElementById('tikz-image-upload')?.click()}

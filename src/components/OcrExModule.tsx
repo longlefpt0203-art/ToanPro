@@ -25,7 +25,6 @@ import {
 } from 'lucide-react';
 import { ExamQuestion, BYOKConfig, QuestionType } from '../types';
 import { buildLatexEx, parseExBlocks, renderLatexToHtml } from '../lib/latexHelper';
-import { SAMPLE_QUESTIONS } from '../data/samples';
 import { incrementQuotaCount } from '../lib/storage';
 
 import { optimizeImageForOcr, fetchSafeJson } from '../lib/imageHelper';
@@ -79,6 +78,24 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
   const [isComparing, setIsComparing] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [serverStatus, setServerStatus] = useState<{
+    hasServerKey: boolean;
+    serverKeyPrefix: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/system-status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          setServerStatus({
+            hasServerKey: data.hasServerKey,
+            serverKeyPrefix: data.serverKeyPrefix,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Sync questions to rawLatexText when questions change
   useEffect(() => {
@@ -242,13 +259,31 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
         setProgressText(`Đang phân tích ảnh ${i + 1}/${imagesList.length} (${currentImg.name})...`);
 
         try {
-          const latex = await callWithFallbackOcr({
-            imageBase64: currentImg.dataUrl,
-            mimeType: currentImg.mimeType,
-            questionType: questionTypeChoice,
-            includeSolution,
-            byok,
-          });
+          let latex = '';
+          try {
+            latex = await callWithFallbackOcr({
+              imageBase64: currentImg.dataUrl,
+              mimeType: currentImg.mimeType,
+              questionType: questionTypeChoice,
+              includeSolution,
+              byok,
+            });
+          } catch (firstErr: any) {
+            // If 503 or high demand spike, retry once after short pause
+            if (firstErr.message?.includes('503') || firstErr.message?.includes('high demand') || firstErr.message?.includes('UNAVAILABLE')) {
+              setProgressText(`Ảnh ${i + 1}/${imagesList.length}: Máy chủ đang bận, đang tự động thử lại lần 2...`);
+              await new Promise(r => setTimeout(r, 1200));
+              latex = await callWithFallbackOcr({
+                imageBase64: currentImg.dataUrl,
+                mimeType: currentImg.mimeType,
+                questionType: questionTypeChoice,
+                includeSolution,
+                byok,
+              });
+            } else {
+              throw firstErr;
+            }
+          }
 
           if (latex) {
             incrementQuotaCount();
@@ -297,13 +332,30 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
     setProgressText(`Đang phân tích: ${imgItem.name}...`);
 
     try {
-      const latex = await callWithFallbackOcr({
-        imageBase64: imgItem.dataUrl,
-        mimeType: imgItem.mimeType,
-        questionType: questionTypeChoice,
-        includeSolution,
-        byok,
-      });
+      let latex = '';
+      try {
+        latex = await callWithFallbackOcr({
+          imageBase64: imgItem.dataUrl,
+          mimeType: imgItem.mimeType,
+          questionType: questionTypeChoice,
+          includeSolution,
+          byok,
+        });
+      } catch (firstErr: any) {
+        if (firstErr.message?.includes('503') || firstErr.message?.includes('high demand') || firstErr.message?.includes('UNAVAILABLE')) {
+          setProgressText(`Máy chủ đang bận, đang tự động thử lại...`);
+          await new Promise(r => setTimeout(r, 1200));
+          latex = await callWithFallbackOcr({
+            imageBase64: imgItem.dataUrl,
+            mimeType: imgItem.mimeType,
+            questionType: questionTypeChoice,
+            includeSolution,
+            byok,
+          });
+        } else {
+          throw firstErr;
+        }
+      }
 
       if (latex) {
         incrementQuotaCount();
@@ -376,13 +428,6 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
     }));
   };
 
-  const handleLoadSample = (sampleIndex: number) => {
-    const sample = SAMPLE_QUESTIONS[sampleIndex];
-    if (sample) {
-      setQuestions(prev => [...prev, { ...sample, id: `sample-${Date.now()}` }]);
-      showNotification(`Đã nạp mẫu: ${sample.title || 'Câu hỏi chuẩn GDPT 2018'}`);
-    }
-  };
 
   const activeImage = imagesList.find(img => img.id === selectedImageId) || imagesList[0];
 
@@ -465,15 +510,23 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
               <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-800/40 text-[11px] text-emerald-300">
                 <span className="flex items-center gap-1.5 font-medium">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  API Key đã lưu & sẵn sàng: <code className="font-mono bg-emerald-900/40 px-1 py-0.5 rounded">{byok.geminiKey.slice(0, 8)}...{byok.geminiKey.slice(-4)}</code>
+                  API Key cá nhân đã sẵn sàng: <code className="font-mono bg-emerald-900/40 px-1 py-0.5 rounded">{byok.geminiKey.slice(0, 8)}...{byok.geminiKey.slice(-4)}</code>
                 </span>
                 <span className="text-emerald-400/80 text-[10px]">Đã ghi nhớ trong trình duyệt (localStorage)</span>
               </div>
+            ) : serverStatus?.hasServerKey ? (
+              <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-cyan-950/30 border border-cyan-800/40 text-[11px] text-cyan-300">
+                <span className="flex items-center gap-1.5 font-medium">
+                  <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                  Đang dùng Gemini API Key máy chủ AI Studio: <code className="font-mono bg-cyan-900/40 px-1 py-0.5 rounded">{serverStatus.serverKeyPrefix}</code>
+                </span>
+                <span className="text-cyan-400/80 text-[10px]">✓ Sẵn sàng quét đề ngay</span>
+              </div>
             ) : (
-              <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-blue-950/30 border border-blue-800/40 text-[11px] text-blue-300">
+              <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-amber-950/30 border border-amber-800/40 text-[11px] text-amber-300">
                 <span className="flex items-center gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                  Chưa lưu Gemini API Key cá nhân. Vào tab <strong>Cài đặt BYOK</strong> để nhập key nếu chạy trên Vercel.
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  Chưa có API Key. Vào tab <strong>Cài đặt BYOK</strong> để nhập Gemini API Key miễn phí của bạn.
                 </span>
               </div>
             )}
@@ -602,30 +655,6 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
               </div>
             )}
 
-            {/* Quick Sample Presets */}
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-xs text-slate-400 flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Thử ngay mẫu đề chuẩn GDPT 2018:
-              </span>
-              <button
-                onClick={() => handleLoadSample(0)}
-                className="text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-              >
-                + Mẫu 1: Trắc nghiệm 4 lựa chọn (MCQ)
-              </button>
-              <button
-                onClick={() => handleLoadSample(1)}
-                className="text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-              >
-                + Mẫu 2: Đúng / Sai 4 ý (GDPT 2018)
-              </button>
-              <button
-                onClick={() => handleLoadSample(2)}
-                className="text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-              >
-                + Mẫu 3: Trả lời ngắn / Điền số
-              </button>
-            </div>
           </div>
 
           {/* Configuration & Action controls */}
@@ -808,11 +837,35 @@ export const OcrExModule: React.FC<OcrExModuleProps> = ({
               <span>Thêm câu mới</span>
             </button>
 
+            <button
+              onClick={() => {
+                if (questions.length === 0 && imagesList.length === 0) {
+                  showNotification('Phiên làm việc hiện tại đang trống!');
+                  return;
+                }
+                if (confirm('Làm mới phiên làm việc: Xóa tất cả ảnh đã tải và danh sách câu hỏi để bắt đầu phiên mới?')) {
+                  setQuestions([]);
+                  setImagesList([]);
+                  setSelectedImageId(null);
+                  setRawLatexText('');
+                  setPix2texResult('');
+                  setErrorMsg(null);
+                  showNotification('Đã làm mới phiên làm việc hoàn toàn!');
+                }
+              }}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition-colors"
+              title="Bắt đầu phiên làm việc mới (xóa ảnh và câu hỏi phiên này)"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Phiên mới</span>
+            </button>
+
             {questions.length > 0 && (
               <button
                 onClick={() => {
-                  if (confirm('Bạn có chắc muốn xóa toàn bộ danh sách câu hỏi hiện tại?')) {
+                  if (confirm('Bạn có chắc muốn xóa toàn bộ danh sách câu hỏi trong phiên này?')) {
                     setQuestions([]);
+                    setRawLatexText('');
                   }
                 }}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-red-950/60 text-slate-400 hover:text-red-300 text-xs font-medium border border-slate-700 hover:border-red-800 transition-colors"

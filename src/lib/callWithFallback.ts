@@ -5,7 +5,7 @@ import { fetchSafeJson } from './imageHelper';
  * Direct client-side Gemini REST API call when running on static hosting (Vercel without backend, GitHub Pages)
  */
 async function callDirectGemini(apiKey: string, prompt: string, imageBase64?: string, mimeType = 'image/png'): Promise<string> {
-  const candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest'];
+  const candidateModels = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
   let lastError: Error | null = null;
 
   for (const model of candidateModels) {
@@ -38,16 +38,18 @@ async function callDirectGemini(apiKey: string, prompt: string, imageBase64?: st
       }
 
       const errMsg = data.error?.message || `Lỗi Gemini API (${res.status})`;
-      // Check for 503 high demand or 429 rate limit
-      if (res.status === 503 || res.status === 429 || errMsg.includes('high demand') || errMsg.includes('UNAVAILABLE')) {
-        console.warn(`Model ${model} đang bận (503 cao điểm), tự động chuyển sang ${candidateModels[candidateModels.indexOf(model) + 1] || 'dự phòng'}...`);
+      // Check for 503 high demand or 429 rate limit or not available
+      if (res.status === 503 || res.status === 429 || errMsg.includes('high demand') || errMsg.includes('UNAVAILABLE') || errMsg.includes('longer available')) {
+        console.warn(`Model ${model} đang bận (${errMsg.slice(0, 70)}), tự động chuyển sang mô hình tiếp theo...`);
         lastError = new Error(`Mô hình ${model} đang quá tải cao điểm: ${errMsg}`);
+        await new Promise(r => setTimeout(r, 350));
         continue;
       }
       throw new Error(errMsg);
     } catch (err: any) {
-      if (err.message?.includes('high demand') || err.message?.includes('503') || err.message?.includes('UNAVAILABLE') || err.message?.includes('429')) {
+      if (err.message?.includes('high demand') || err.message?.includes('503') || err.message?.includes('UNAVAILABLE') || err.message?.includes('429') || err.message?.includes('longer available')) {
         lastError = err;
+        await new Promise(r => setTimeout(r, 350));
         continue;
       }
       throw err;
@@ -63,7 +65,7 @@ async function callDirectGemini(apiKey: string, prompt: string, imageBase64?: st
 async function callDirectGroqOrOpenRouter(provider: 'groq' | 'openrouter', apiKey: string, prompt: string, imageBase64?: string, mimeType = 'image/png'): Promise<string> {
   const isGroq = provider === 'groq';
   const url = isGroq ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
-  const model = isGroq ? 'llama-3.2-11b-vision-preview' : 'google/gemini-2.0-flash-001';
+  const model = isGroq ? 'llama-3.2-11b-vision-preview' : 'google/gemini-2.5-flash';
 
   const messages: any[] = [];
   if (imageBase64) {
@@ -109,7 +111,7 @@ async function callDirectGroqOrOpenRouter(provider: 'groq' | 'openrouter', apiKe
 /**
  * Robust OCR API with fallback chain:
  * 1. Try local/Vercel /api/ocr endpoint
- * 2. If 404 (Vercel static deploy): fallback directly to client-side BYOK (Gemini -> Groq -> OpenRouter)
+ * 2. If server error / 404: fallback directly to client-side BYOK (Gemini -> Groq -> OpenRouter)
  */
 export async function callWithFallbackOcr(params: {
   imageBase64: string;
@@ -134,15 +136,25 @@ export async function callWithFallbackOcr(params: {
       }),
     });
 
-    // If endpoint exists and works
-    if (res.status !== 404) {
+    if (res.ok) {
       const data = await fetchSafeJson(res);
-      if (!res.ok) throw new Error(data.error || 'Lỗi khi nhận diện đề thi.');
       return data.latex || '';
+    } else if (res.status !== 404) {
+      const data = await fetchSafeJson(res).catch(() => ({ error: '' }));
+      // If user has personal BYOK key, fallback to direct client call
+      if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+        throw new Error(data.error || `Máy chủ AI báo lỗi (${res.status}). Vui lòng thử lại.`);
+      }
     }
   } catch (err: any) {
-    // If not a 404 or connection error, check if we can fallback
-    if (!err.message?.includes('404') && !err.message?.includes('NOT_FOUND') && !err.message?.includes('Failed to fetch')) {
+    // If user has no BYOK key, rethrow error
+    if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+      if (err.message?.includes('404') || err.message?.includes('NOT_FOUND') || err.message?.includes('Failed to fetch')) {
+        throw new Error(
+          'Máy chủ API không phản hồi (404). ' +
+          'Vui lòng vào tab "Cài đặt BYOK" ở trên và nhập Gemini API Key miễn phí của bạn để ứng dụng hoạt động trực tiếp!'
+        );
+      }
       throw err;
     }
   }
@@ -173,9 +185,8 @@ CHỈ TRẢ VỀ DUY NHẤT mã LaTeX các khối \\begin{ex}...\\end{ex}. Khôn
     return await callDirectGemini(byok.geminiKey, promptText, imageBase64, mimeType);
   }
 
-  // If no BYOK key is configured and server is 404 on Vercel
   throw new Error(
-    'Ứng dụng đang chạy trên Vercel (chế độ tĩnh không có backend riêng). ' +
+    'Ứng dụng đang chạy trên chế độ tĩnh. ' +
     'Vui lòng vào tab "Cài đặt BYOK" ở trên và nhập Gemini API Key miễn phí của bạn để ứng dụng hoạt động trực tiếp!'
   );
 }
@@ -199,13 +210,20 @@ export async function callWithFallbackSolve(params: {
       body: JSON.stringify(params),
     });
 
-    if (res.status !== 404) {
+    if (res.ok) {
       const data = await fetchSafeJson(res);
-      if (!res.ok) throw new Error(data.error || 'Lỗi khi giải toán.');
       return data.latex || '';
+    } else if (res.status !== 404) {
+      const data = await fetchSafeJson(res).catch(() => ({ error: '' }));
+      if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+        throw new Error(data.error || 'Lỗi khi giải toán.');
+      }
     }
   } catch (err: any) {
-    if (!err.message?.includes('404') && !err.message?.includes('NOT_FOUND') && !err.message?.includes('Failed to fetch')) {
+    if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+      if (err.message?.includes('404') || err.message?.includes('NOT_FOUND') || err.message?.includes('Failed to fetch')) {
+        throw new Error('Máy chủ API chưa sẵn sàng. Vui lòng vào "Cài đặt BYOK" nhập Gemini API Key miễn phí của bạn!');
+      }
       throw err;
     }
   }
@@ -231,7 +249,7 @@ ${questionText ? `ĐỀ BÀI: ${questionText}` : ''}
   }
 
   throw new Error(
-    'Ứng dụng đang chạy trên Vercel. Vui lòng vào tab "Cài đặt BYOK" nhập Gemini API Key của bạn để sử dụng tính năng giải toán!'
+    'Ứng dụng đang chạy ở chế độ tĩnh. Vui lòng vào tab "Cài đặt BYOK" nhập Gemini API Key của bạn để sử dụng tính năng giải toán!'
   );
 }
 
@@ -252,13 +270,20 @@ export async function callWithFallbackImg2Tikz(params: {
       body: JSON.stringify(params),
     });
 
-    if (res.status !== 404) {
+    if (res.ok) {
       const data = await fetchSafeJson(res);
-      if (!res.ok) throw new Error(data.error || 'Lỗi khi chuyển ảnh sang TikZ.');
       return data.tikz || '';
+    } else if (res.status !== 404) {
+      const data = await fetchSafeJson(res).catch(() => ({ error: '' }));
+      if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+        throw new Error(data.error || 'Lỗi khi chuyển ảnh sang TikZ.');
+      }
     }
   } catch (err: any) {
-    if (!err.message?.includes('404') && !err.message?.includes('NOT_FOUND') && !err.message?.includes('Failed to fetch')) {
+    if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+      if (err.message?.includes('404') || err.message?.includes('NOT_FOUND') || err.message?.includes('Failed to fetch')) {
+        throw new Error('Máy chủ API không phản hồi (404). Vui lòng vào "Cài đặt BYOK" nhập Gemini API Key của bạn!');
+      }
       throw err;
     }
   }
@@ -277,7 +302,7 @@ CHỈ TRẢ VỀ DUY NHẤT khối \\begin{tikzpicture}...\\end{tikzpicture}.
   }
 
   throw new Error(
-    'Ứng dụng đang chạy trên Vercel. Vui lòng vào tab "Cài đặt BYOK" nhập Gemini API Key của bạn để sử dụng tính năng chuyển ảnh sang TikZ!'
+    'Ứng dụng đang chạy ở chế độ tĩnh. Vui lòng vào tab "Cài đặt BYOK" nhập Gemini API Key của bạn để sử dụng tính năng chuyển ảnh sang TikZ!'
   );
 }
 
@@ -298,13 +323,20 @@ export async function callWithFallbackTikzRefine(params: {
       body: JSON.stringify(params),
     });
 
-    if (res.status !== 404) {
+    if (res.ok) {
       const data = await fetchSafeJson(res);
-      if (!res.ok) throw new Error(data.error || 'Lỗi tinh chỉnh TikZ.');
       return data.tikz || '';
+    } else if (res.status !== 404) {
+      const data = await fetchSafeJson(res).catch(() => ({ error: '' }));
+      if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+        throw new Error(data.error || 'Lỗi tinh chỉnh TikZ.');
+      }
     }
   } catch (err: any) {
-    if (!err.message?.includes('404') && !err.message?.includes('NOT_FOUND') && !err.message?.includes('Failed to fetch')) {
+    if (!byok.geminiKey && !byok.groqKey && !byok.openRouterKey) {
+      if (err.message?.includes('404') || err.message?.includes('NOT_FOUND') || err.message?.includes('Failed to fetch')) {
+        throw new Error('Vui lòng vào tab "Cài đặt BYOK" nhập Gemini API Key để sử dụng tính năng tinh chỉnh TikZ!');
+      }
       throw err;
     }
   }
@@ -322,6 +354,6 @@ Cập nhật mã TikZ và CHỈ TRẢ VỀ khối \\begin{tikzpicture}...\\end{t
   }
 
   throw new Error(
-    'Vui lòng vào tab "Cài đặt BYOK" nhập Gemini API Key để sử dụng tính năng tinh chỉnh TikZ trên Vercel!'
+    'Vui lòng vào tab "Cài đặt BYOK" nhập Gemini API Key để sử dụng tính năng tinh chỉnh TikZ!'
   );
 }

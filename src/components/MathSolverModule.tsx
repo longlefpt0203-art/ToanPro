@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { ExamQuestion, BYOKConfig, MathSolveItem } from '../types';
 import { renderLatexToHtml, parseExBlocks } from '../lib/latexHelper';
-import { getSavedMathSolutions, saveMathSolutions, incrementQuotaCount } from '../lib/storage';
+import { incrementQuotaCount } from '../lib/storage';
 import { callWithFallbackSolve } from '../lib/callWithFallback';
 
 interface MathSolverModuleProps {
@@ -34,30 +34,11 @@ export const MathSolverModule: React.FC<MathSolverModuleProps> = ({
   const [isSolving, setIsSolving] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Result
+  // Result (phiên nào đúng phiên đó, ban đầu để trống)
   const [latexResult, setLatexResult] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
   const [addedToExam, setAddedToExam] = useState<boolean>(false);
-  const [historyItems, setHistoryItems] = useState<MathSolveItem[]>(() => getSavedMathSolutions());
-
-  const sampleMathPrompts = [
-    {
-      title: 'Hàm số 12: Cực trị có tham số m',
-      text: 'Tìm tất cả các giá trị thực của tham số $m$ để hàm số $y = \\dfrac{1}{3}x^3 - mx^2 + (m^2 - 4)x + 3$ đạt cực đại tại điểm $x = 1$.',
-    },
-    {
-      title: 'Tích phân 12: Tích phân từng phần',
-      text: 'Tính tích phân $I = \\int_{0}^{1} (2x + 1) e^x \\,\\mathrm{d}x$. Trình bày chi tiết cách đặt $u$ và $\\mathrm{d}v$.',
-    },
-    {
-      title: 'Oxyz 12: Khoảng cách từ điểm đến mặt phẳng',
-      text: 'Trong không gian $Oxyz$, cho điểm $M(1; -2; 3)$ và mặt phẳng $(P): 2x - y + 2z - 1 = 0$. Tính khoảng cách $d$ từ điểm $M$ đến mặt phẳng $(P)$ và viết phương trình mặt cầu tâm $M$ tiếp xúc với $(P)$.',
-    },
-    {
-      title: 'Hình không gian 12: Thể tích nón',
-      text: 'Cho hình nón có bán kính đáy $r = 3$ và chiều cao $h = 4$. Tính diện tích xung quanh $S_{xq}$ và thể tích $V$ của khối nón đã cho.',
-    },
-  ];
+  const [historyItems, setHistoryItems] = useState<MathSolveItem[]>([]);
 
   // Clipboard paste listener
   React.useEffect(() => {
@@ -110,7 +91,7 @@ export const MathSolverModule: React.FC<MathSolverModuleProps> = ({
         setLatexResult(latex);
         incrementQuotaCount();
 
-        // Save to local history
+        // Save to current session history
         const newItem: MathSolveItem = {
           id: `sol-${Date.now()}`,
           question: questionInput || 'Giải từ ảnh',
@@ -120,7 +101,6 @@ export const MathSolverModule: React.FC<MathSolverModuleProps> = ({
         };
         const updated = [newItem, ...historyItems.slice(0, 19)];
         setHistoryItems(updated);
-        saveMathSolutions(updated);
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Không thể giải bài toán này.');
@@ -213,22 +193,6 @@ export const MathSolverModule: React.FC<MathSolverModuleProps> = ({
               className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-sans leading-relaxed"
               placeholder="Ví dụ: Cho hàm số y = x^3 - 3x + 2. Tìm tọa độ các điểm cực trị của đồ thị hàm số và viết phương trình đường thẳng đi qua hai điểm cực trị đó..."
             />
-
-            {/* Quick Samples */}
-            <div className="flex flex-wrap items-center gap-1.5 pt-1">
-              <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                <BookOpen className="w-3.5 h-3.5 text-emerald-400" /> Bài toán mẫu:
-              </span>
-              {sampleMathPrompts.map((s, i) => (
-                <button
-                  key={i}
-                  onClick={() => setQuestionInput(s.text)}
-                  className="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-                >
-                  {s.title}
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* Optional Image Upload */}
@@ -344,9 +308,17 @@ export const MathSolverModule: React.FC<MathSolverModuleProps> = ({
       {/* History of solved problems */}
       {historyItems.length > 0 && (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-          <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
-            <History className="w-4 h-4 text-emerald-400" /> Lịch sử bài toán đã giải gần đây ({historyItems.length})
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
+              <History className="w-4 h-4 text-emerald-400" /> Lịch sử trong phiên này ({historyItems.length})
+            </h3>
+            <button
+              onClick={() => setHistoryItems([])}
+              className="text-[11px] text-slate-400 hover:text-red-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 hover:border-red-800 transition-colors"
+            >
+              Xóa lịch sử phiên
+            </button>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {historyItems.slice(0, 4).map((it) => (
               <div

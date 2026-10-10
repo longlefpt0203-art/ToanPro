@@ -26,16 +26,8 @@ export const TikzBeautifierModule: React.FC<TikzBeautifierModuleProps> = ({
   initialCode,
   byok,
 }) => {
-  const [inputCode, setInputCode] = useState<string>(initialCode || `\\begin{tikzpicture}
-\\coordinate (A) at (0.0000000, 0.0000000)
-\\coordinate (B) at (-1.5555556, -1.3333333)
-\\coordinate (C) at (2.8888889, -1.3333333)
-\\coordinate (D) at (4.4444444, 0.0000000)
-\\coordinate (S) at (0.0000000, 3.6666667)
-\\draw[dashed] (S)--(A) (B)--(A)--(D)
-\\draw (S)--(B)--(C)--(D)--(S) (S)--(C)
-\\foreach \\p/\\pos in {A/left, B/below left, C/below right, D/right, S/above} \\fill (\\p) circle (1.2pt) node[\\pos] {$\\p$}
-\\end{tikzpicture}`);
+  // Phiên nào đúng phiên đó: không nạp trước mã TikZ mẫu nếu không có mã truyền vào
+  const [inputCode, setInputCode] = useState<string>(initialCode || '');
 
   const [outputCode, setOutputCode] = useState<string>('');
   const [stats, setStats] = useState<FormattedTikZResult['stats'] | null>(null);

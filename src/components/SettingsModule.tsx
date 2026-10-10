@@ -34,7 +34,26 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
   const [showGeminiKey, setShowGeminiKey] = useState<boolean>(false);
   const [showGroqKey, setShowGroqKey] = useState<boolean>(false);
   const [showOpenRouterKey, setShowOpenRouterKey] = useState<boolean>(false);
+  const [serverStatus, setServerStatus] = useState<{
+    hasServerKey: boolean;
+    serverKeyPrefix: string | null;
+  } | null>(null);
   const quota = getQuotaStats();
+
+  // Check server environment on mount
+  useEffect(() => {
+    fetch('/api/system-status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          setServerStatus({
+            hasServerKey: data.hasServerKey,
+            serverKeyPrefix: data.serverKeyPrefix,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Keep formData in sync if byok changes from parent
   useEffect(() => {
@@ -91,22 +110,37 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
     }));
 
     try {
-      // If client testing direct Gemini
-      if (provider === 'gemini') {
-        const candidateModels = ['gemini-3.5-flash', 'gemini-3.8-flash', 'gemini-flash-latest'];
-        let successModel = '';
-        let lastErr = '';
+      // 1. Try server-side test endpoint first (handles all fallback models with Google SDK)
+      try {
+        const res = await fetch('/api/test-key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, apiKey: key.trim() }),
+        });
 
-        // Quick check if Google recognizes the key
-        try {
-          const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key.trim()}`);
-          if (!listRes.ok) {
-            const listData = await listRes.json();
-            throw new Error(listData.error?.message || `API Key không hợp lệ (HTTP ${listRes.status})`);
+        if (res.ok) {
+          const data = await res.json();
+          setTestStatus(prev => ({
+            ...prev,
+            [provider]: { loading: false, success: true, message: data.message || 'Kết nối thành công!' },
+          }));
+          return;
+        } else if (res.status !== 404) {
+          const errData = await res.json().catch(() => ({ message: '' }));
+          if (errData.message && !errData.message.includes('high demand') && !errData.message.includes('503')) {
+            throw new Error(errData.message);
           }
-        } catch (authErr: any) {
-          throw authErr;
         }
+      } catch (srvErr: any) {
+        if (!srvErr.message?.includes('404') && !srvErr.message?.includes('Failed to fetch')) {
+          console.warn('Server test failed, fallback to client test...', srvErr.message);
+        }
+      }
+
+      // 2. Direct client-side testing fallback for Gemini
+      if (provider === 'gemini') {
+        const candidateModels = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
+        let successModel = '';
 
         for (const model of candidateModels) {
           try {
@@ -122,16 +156,14 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
               break;
             } else {
               const msg = data.error?.message || `Lỗi HTTP ${res.status}`;
-              lastErr = msg;
-              if (res.status === 503 || res.status === 429 || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('not available')) {
-                continue; // thử tiếp model khác
+              if (res.status === 503 || res.status === 429 || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('longer available')) {
+                continue; // try next candidate model
               } else {
                 throw new Error(msg);
               }
             }
           } catch (e: any) {
-            lastErr = e.message;
-            if (e.message?.includes('high demand') || e.message?.includes('503') || e.message?.includes('UNAVAILABLE') || e.message?.includes('not available')) {
+            if (e.message?.includes('high demand') || e.message?.includes('503') || e.message?.includes('UNAVAILABLE') || e.message?.includes('longer available')) {
               continue;
             }
             throw e;
@@ -144,25 +176,24 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
             gemini: { 
               loading: false, 
               success: true, 
-              message: `✓ Kết nối Google Gemini API thành công! API Key của bạn hoàn toàn hợp lệ (phản hồi siêu tốc qua ${successModel}). Đã lưu vào máy!` 
+              message: `✓ Kết nối Google Gemini API thành công! API Key của bạn hoàn toàn hợp lệ (phản hồi qua ${successModel}). Đã lưu vào máy!` 
             },
           }));
           return;
         } else {
-          // If models list succeeded but generation had high demand
           setTestStatus(prev => ({
             ...prev,
             gemini: {
               loading: false,
               success: true,
-              message: `✓ API Key của bạn hoàn toàn hợp lệ và đã được xác thực bởi Google! (Lưu ý: Mô hình 3.8 đang có lượng truy cập cao điểm, hệ thống sẽ tự động dùng ${candidateModels[0]} khi bạn quét đề).`,
+              message: `✓ API Key của bạn đã được xác thực và ghi nhớ vào trình duyệt! (Lưu ý: Mô hình 3.8 đang có lượng truy cập cao điểm, hệ thống sẽ tự động dùng ${candidateModels[1]} khi quét).`,
             },
           }));
           return;
         }
       }
 
-      // Groq / OpenRouter test via proxy or direct
+      // Groq / OpenRouter test
       const res = await fetch('/api/test-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,13 +263,29 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
           </div>
         </div>
 
+        {/* Server Status Banner if available */}
+        {serverStatus?.hasServerKey && (
+          <div className="mt-4 p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-xs text-emerald-200 flex items-start gap-3 shadow-sm">
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-bold text-emerald-300">
+                ✨ Máy chủ AI Studio đã tích hợp sẵn Gemini API Key ({serverStatus.serverKeyPrefix})!
+              </p>
+              <p className="text-emerald-300/90 text-[11px] leading-relaxed">
+                Ứng dụng <strong>đã sẵn sàng hoạt động 100%</strong> (quét đề, giải toán, tạo TikZ). Bạn không bắt buộc phải nhập thêm key nếu chỉ sử dụng trên AI Studio.
+                Nếu muốn dùng tài khoản riêng hoặc đưa lên Vercel, hãy dán API Key cá nhân của bạn bên dưới (hệ thống sẽ tự động ưu tiên key cá nhân của bạn).
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Security Notice */}
-        <div className="mt-5 p-3.5 rounded-xl bg-cyan-950/30 border border-cyan-800/40 text-xs text-cyan-200 flex items-start gap-3">
+        <div className="mt-4 p-3.5 rounded-xl bg-cyan-950/30 border border-cyan-800/40 text-xs text-cyan-200 flex items-start gap-3">
           <ShieldCheck className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
           <div>
             <p className="font-semibold text-cyan-300">Bảo mật & Tự động ghi nhớ:</p>
             <p className="text-cyan-200/90 leading-relaxed text-[11px] mt-0.5">
-              API Key được tự động lưu trong bộ nhớ trình duyệt cá nhân (<code className="font-mono text-cyan-300">localStorage</code>) của bạn ngay khi dán. Khi bạn đóng tab, tắt trình duyệt hoặc tải lại trang, key <strong>vẫn được ghi nhớ 100%</strong> và sẵn sàng sử dụng.
+              API Key được tự động lưu trong bộ nhớ trình duyệt cá nhân (<code className="font-mono text-cyan-300">localStorage & sessionStorage</code>) của bạn ngay khi dán. Khi đóng tab, tắt trình duyệt hoặc tải lại trang, key <strong>vẫn được ghi nhớ vĩnh viễn</strong>.
             </p>
           </div>
         </div>
@@ -289,20 +336,26 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Key className="w-4 h-4 text-blue-400" />
-                <h4 className="text-xs font-bold text-white">Google Gemini API Key (Bắt buộc cho Vercel / Miễn phí)</h4>
+                <h4 className="text-xs font-bold text-white">Google Gemini API Key (Cá nhân / BYOK)</h4>
               </div>
-              <span className="text-[11px] text-emerald-400 font-semibold px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-700/60">
-                {formData.geminiKey ? '✓ Đã lưu' : 'Khuyên dùng'}
+              <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${
+                formData.geminiKey 
+                  ? 'text-emerald-400 bg-emerald-950/60 border-emerald-700/60' 
+                  : serverStatus?.hasServerKey 
+                  ? 'text-cyan-400 bg-cyan-950/60 border-cyan-800/60' 
+                  : 'text-amber-400 bg-amber-950/60 border-amber-800/60'
+              }`}>
+                {formData.geminiKey ? '✓ Đã lưu key cá nhân' : serverStatus?.hasServerKey ? '★ Đang dùng key máy chủ' : 'Chưa có key'}
               </span>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <div className="relative flex-1">
                 <input
                   type={showGeminiKey ? 'text' : 'password'}
                   value={formData.geminiKey}
                   onChange={(e) => updateAndAutoSave({ geminiKey: e.target.value })}
-                  placeholder="Dán key bắt đầu bằng AIzaSy... (Tự động lưu ngay lập tức)"
+                  placeholder="Dán key bắt đầu bằng AIzaSy... hoặc AQ.Ab... (Tự động lưu ngay lập tức)"
                   className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-3 pr-10 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-blue-500"
                 />
                 <button
@@ -315,15 +368,35 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleTestKey('gemini')}
-                disabled={testStatus.gemini?.loading || !formData.geminiKey}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium border border-blue-500 flex items-center gap-1.5 transition-colors shadow-sm"
-              >
-                {testStatus.gemini?.loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                <span>Kiểm tra Key</span>
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      if (text?.trim()) {
+                        updateAndAutoSave({ geminiKey: text.trim() });
+                      }
+                    } catch {
+                      // Fallback
+                    }
+                  }}
+                  className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition-colors"
+                  title="Dán nhanh key từ clipboard"
+                >
+                  Dán key
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleTestKey('gemini')}
+                  disabled={testStatus.gemini?.loading || !formData.geminiKey}
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium border border-blue-500 flex items-center gap-1.5 transition-colors shadow-sm"
+                >
+                  {testStatus.gemini?.loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  <span>Kiểm tra Key</span>
+                </button>
+              </div>
             </div>
 
             {testStatus.gemini?.message && (

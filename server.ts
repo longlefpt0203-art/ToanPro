@@ -9,9 +9,12 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Active session in-memory cache for user keys (useful when client browser storage is cleared)
+let sessionUserGeminiKey: string | null = null;
+
 // Helper to get or create Gemini client
 function getGeminiClient(customKey?: string) {
-  const apiKey = customKey?.trim() || process.env.GEMINI_API_KEY;
+  const apiKey = customKey?.trim() || sessionUserGeminiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('Chưa cấu hình API Key. Vui lòng thêm GEMINI_API_KEY hoặc cấu hình BYOK trong Cài đặt.');
   }
@@ -25,11 +28,38 @@ function getGeminiClient(customKey?: string) {
   });
 }
 
+// Generate with automatic model fallback when 503 / high demand occurs
+async function generateWithModelFallback(ai: GoogleGenAI, contents: any): Promise<string> {
+  // Use approved non-deprecated models: gemini-3.8-flash primary, gemini-3.5-flash & gemini-3.1-flash-lite fallbacks
+  const candidateModels = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
+  let lastError: any = null;
+
+  for (const model of candidateModels) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+      });
+      if (response && response.text) {
+        return response.text;
+      }
+    } catch (err: any) {
+      console.warn(`Mô hình ${model} bận (${err.message?.slice(0, 80)}), tự động chuyển sang mô hình tiếp theo...`);
+      lastError = err;
+      // Short backoff before next model
+      await new Promise(r => setTimeout(r, 350));
+      continue;
+    }
+  }
+
+  throw lastError || new Error('Tất cả mô hình Gemini đều đang có lượng truy cập cao điểm. Vui lòng thử lại sau giây lát!');
+}
+
 // Fallback provider helper (Groq & OpenRouter if requested)
 async function callGroqOrOpenRouter(provider: 'groq' | 'openrouter', apiKey: string, prompt: string, base64Image?: string, mimeType = 'image/png') {
   const isGroq = provider === 'groq';
   const url = isGroq ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
-  const model = isGroq ? 'llama-3.2-11b-vision-preview' : 'google/gemini-2.0-flash-001';
+  const model = isGroq ? 'llama-3.2-11b-vision-preview' : 'google/gemini-2.5-flash';
 
   const messages: any[] = [];
   if (base64Image) {
@@ -165,11 +195,7 @@ CHỈ TRẢ VỀ DUY NHẤT mã LaTeX các khối \\begin{ex}...\\end{ex}, khôn
       }));
       parts.push({ text: promptText });
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: { parts },
-      });
-      latexOutput = response.text || '';
+      latexOutput = await generateWithModelFallback(ai, { parts });
     }
 
     // Clean backticks
@@ -222,23 +248,15 @@ YÊU CẦU:
     if (imageBase64) {
       const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
       const ai = getGeminiClient(byok?.geminiKey);
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: {
-          parts: [
-            { inlineData: { mimeType, data: cleanBase64 } },
-            { text: `${promptText}\n\nĐề bài kèm theo (nếu có): ${questionText || ''}` },
-          ],
-        },
+      solutionOutput = await generateWithModelFallback(ai, {
+        parts: [
+          { inlineData: { mimeType, data: cleanBase64 } },
+          { text: `${promptText}\n\nĐề bài kèm theo (nếu có): ${questionText || ''}` },
+        ],
       });
-      solutionOutput = response.text || '';
     } else {
       const ai = getGeminiClient(byok?.geminiKey);
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `${promptText}\n\nĐỀ BÀI:\n${questionText}`,
-      });
-      solutionOutput = response.text || '';
+      solutionOutput = await generateWithModelFallback(ai, `${promptText}\n\nĐỀ BÀI:\n${questionText}`);
     }
 
     solutionOutput = solutionOutput.replace(/```latex/g, '').replace(/```/g, '').trim();
@@ -290,17 +308,14 @@ CHỈ TRẢ VỀ DUY NHẤT khối \\begin{tikzpicture}...\\end{tikzpicture}, kh
 `;
 
     const ai = getGeminiClient(byok?.geminiKey);
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: {
-        parts: [
-          { inlineData: { mimeType, data: cleanBase64 } },
-          { text: promptText },
-        ],
-      },
+    const tikzOutputRaw = await generateWithModelFallback(ai, {
+      parts: [
+        { inlineData: { mimeType, data: cleanBase64 } },
+        { text: promptText },
+      ],
     });
 
-    let tikzOutput = (response.text || '').replace(/```latex/g, '').replace(/```/g, '').trim();
+    let tikzOutput = tikzOutputRaw.replace(/```latex/g, '').replace(/```/g, '').trim();
 
     return res.json({ success: true, tikz: tikzOutput });
   } catch (error: any) {
@@ -334,12 +349,9 @@ Hãy áp dụng yêu cầu trên một cách chính xác vào mã TikZ, đảm b
 `;
 
     const ai = getGeminiClient(byok?.geminiKey);
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: promptText,
-    });
+    const refinedRaw = await generateWithModelFallback(ai, promptText);
 
-    let refinedTikz = (response.text || '').replace(/```latex/g, '').replace(/```/g, '').trim();
+    let refinedTikz = refinedRaw.replace(/```latex/g, '').replace(/```/g, '').trim();
     return res.json({ success: true, tikz: refinedTikz });
   } catch (error: any) {
     console.error('Error in /api/tikz-refine:', error);
@@ -347,7 +359,7 @@ Hãy áp dụng yêu cầu trên một cách chính xác vào mã TikZ, đảm b
   }
 });
 
-// 5. Test Key endpoint
+// 5. Test Key endpoint (with automatic candidate model fallback)
 app.post('/api/test-key', async (req: Request, res: Response) => {
   try {
     const { provider, apiKey } = req.body;
@@ -358,14 +370,13 @@ app.post('/api/test-key', async (req: Request, res: Response) => {
 
     if (provider === 'gemini') {
       const ai = new GoogleGenAI({
-        apiKey,
+        apiKey: apiKey.trim(),
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
       });
-      const testRes = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: 'Ping test. Reply with: OK',
-      });
-      return res.json({ success: true, message: 'Kết nối Gemini API thành công!', reply: testRes.text });
+      const reply = await generateWithModelFallback(ai, 'Ping test. Reply with: OK');
+      // Store in session cache
+      sessionUserGeminiKey = apiKey.trim();
+      return res.json({ success: true, message: 'Kết nối Google Gemini API thành công!', reply });
     } else if (provider === 'groq') {
       const reply = await callGroqOrOpenRouter('groq', apiKey, 'Reply with OK');
       return res.json({ success: true, message: 'Kết nối Groq API thành công!', reply });
@@ -379,6 +390,32 @@ app.post('/api/test-key', async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, message: `Kiểm tra thất bại: ${error.message}` });
   }
 });
+
+// 6. System Status endpoint (checks server-side keys & environment)
+app.get('/api/system-status', (req: Request, res: Response) => {
+  const hasEnvKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0);
+  const keyPrefix = hasEnvKey ? `${process.env.GEMINI_API_KEY!.slice(0, 6)}...${process.env.GEMINI_API_KEY!.slice(-4)}` : null;
+  return res.json({
+    status: 'ok',
+    hasServerKey: hasEnvKey,
+    serverKeyPrefix: keyPrefix,
+    hasSessionKey: Boolean(sessionUserGeminiKey),
+    sessionKeyPrefix: sessionUserGeminiKey ? `${sessionUserGeminiKey.slice(0, 6)}...${sessionUserGeminiKey.slice(-4)}` : null,
+    models: ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'],
+  });
+});
+
+// 7. Session BYOK sync endpoint
+app.post('/api/byok-session', (req: Request, res: Response) => {
+  const { geminiKey } = req.body;
+  if (typeof geminiKey === 'string' && geminiKey.trim()) {
+    sessionUserGeminiKey = geminiKey.trim();
+  }
+  return res.json({ success: true, cached: Boolean(sessionUserGeminiKey) });
+});
+
+// Export app for serverless / Vercel compatibility
+export default app;
 
 // Mount Vite middleware for development
 async function start() {
@@ -399,6 +436,9 @@ async function start() {
   });
 }
 
-start().catch((err) => {
-  console.error('Failed to start server:', err);
-});
+// Only start listener if run directly
+if (process.env.VERCEL !== '1') {
+  start().catch((err) => {
+    console.error('Failed to start server:', err);
+  });
+}

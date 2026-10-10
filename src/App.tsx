@@ -6,18 +6,14 @@ import { Img2TikzModule } from './components/Img2TikzModule';
 import { TikzBeautifierModule } from './components/TikzBeautifierModule';
 import { SettingsModule } from './components/SettingsModule';
 import { ExamQuestion, BYOKConfig } from './types';
-import { getSavedQuestions, saveQuestions, getBYOKConfig, saveBYOKConfig } from './lib/storage';
+import { getBYOKConfig, saveBYOKConfig } from './lib/storage';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'ocr' | 'solve' | 'img2tikz' | 'beautify' | 'settings'>('ocr');
-  const [questions, setQuestions] = useState<ExamQuestion[]>(() => getSavedQuestions());
+  // Phiên nào đúng phiên đó: khởi tạo danh sách câu hỏi trống ban đầu
+  const [questions, setQuestions] = useState<ExamQuestion[]>([]);
   const [byok, setByok] = useState<BYOKConfig>(() => getBYOKConfig());
   const [beautifierCode, setBeautifierCode] = useState<string>('');
-
-  // Persist questions
-  useEffect(() => {
-    saveQuestions(questions);
-  }, [questions]);
 
   // Persist BYOK config automatically
   useEffect(() => {
